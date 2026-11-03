@@ -1,0 +1,171 @@
+import type { Matrix4, Object3D, PerspectiveCamera, Scene, Vector3, WebGLRenderer } from "three";
+
+/** The two immersive modes the kit offers. */
+export type XRMode = "vr" | "ar";
+
+/**
+ * Which scene axis points up. `"y"` is the glTF and three.js default; `"z"` is the convention of
+ * COMPAS, Rhino and most CAD exports. WebXR itself is always Y up: for a Z-up scene the kit turns
+ * the reference space, never the scene.
+ */
+export type UpAxis = "y" | "z";
+
+/** The kind of input a ray comes from. */
+export type RayKind = "controller" | "hand" | "transient" | "screen";
+
+/**
+ * A place to stand in VR.
+ *
+ * `position` is the eye in the scene's own coordinates and units. The kit keeps the horizontal
+ * part, drops to the floor below it, and lets the headset supply the eye height.
+ *
+ * `yaw` is in degrees about the scene's up axis, counter-clockwise seen from above. Yaw 0 looks
+ * along -Z in a Y-up scene and along +Y in a Z-up scene.
+ */
+export interface Viewpoint {
+  id: string;
+  label?: string;
+  position: [number, number, number];
+  yaw: number;
+  /** Horizontal field of view in degrees; used by desktop viewers only. */
+  fov?: number;
+}
+
+/** The viewpoints file format, version 1. */
+export interface ViewpointsFile {
+  version: 1;
+  /** Relative or absolute URL of the model the viewpoints belong to. */
+  model?: string;
+  metresPerUnit?: number;
+  up?: UpAxis;
+  viewpoints: Viewpoint[];
+}
+
+export interface VROptions {
+  /** Snap turn on the thumbstick, or no turning. Default `"snap"`. */
+  turn?: "snap" | "none";
+  /** Degrees per snap. Default 30. */
+  snapDegrees?: number;
+  /** Eye height in metres, used when no floor is found below a viewpoint. Default 1.6. */
+  eyeHeight?: number;
+  /** Teleport on the floors. Default true. */
+  teleport?: boolean;
+}
+
+export interface AROptions {
+  /** Scales the user can switch between, as model scale factors (1 = 1:1). Default [1, 1/50, 1/100, 1/200]. */
+  scales?: number[];
+  /** Scale used when the model is first placed. Default 1/100. */
+  defaultScale?: number;
+  /** Use WebXR anchors where the browser offers them. Default true. */
+  anchors?: boolean;
+  /** Degrees per turn step of the placed model. Default 15. */
+  rotateStepDegrees?: number;
+}
+
+export interface PerformanceOptions {
+  /** WebXR framebuffer scale factor. Default 1. */
+  framebufferScale?: number;
+  /** Fixed foveation, 0 (off) to 1 (maximum). Default 1. */
+  foveation?: number;
+}
+
+/** A ray hit against the scene. */
+export interface RaycastHit {
+  point: Vector3;
+  /** World-space face normal, unit length, or null when unknown. */
+  normal: Vector3 | null;
+  object: Object3D;
+  distance: number;
+}
+
+/**
+ * Casts a ray in scene (world) coordinates. Hosts with an acceleration structure (a BVH) pass
+ * their own; the default uses a three.js `Raycaster` against `floors` or `model`.
+ */
+export type RaycastFn = (
+  origin: Vector3,
+  direction: Vector3,
+  far: number,
+  targets: "floors" | "all",
+) => RaycastHit | null;
+
+export interface XRKitOptions {
+  renderer: WebGLRenderer;
+  scene: Scene;
+  /** The host's desktop camera. Its pose is restored when a session ends. */
+  camera: PerspectiveCamera;
+  /** What AR places and scales, and what `floors: "auto"` searches. Default: `scene`. */
+  model?: Object3D;
+  /** Metres per scene unit. glTF is metres (1); a millimetre scene is 0.001. Default 1. */
+  metresPerUnit?: number;
+  /** Default `"y"`. */
+  up?: UpAxis;
+  /**
+   * Teleport targets. `"auto"` accepts every surface of `model` whose normal is within 30 degrees
+   * of up; an array restricts teleport to those objects. Default `"auto"`.
+   */
+  floors?: "auto" | Object3D[];
+  viewpoints?: Viewpoint[];
+  vr?: VROptions;
+  ar?: AROptions;
+  performance?: PerformanceOptions;
+  /** Show controller models, loaded from the WebXR input profiles CDN. Default true. */
+  controllerModels?: boolean;
+  /** Show hand models where hand tracking is available. Default true. */
+  hands?: boolean;
+  /** Replace the default raycast, for example with the host's BVH. */
+  raycast?: RaycastFn;
+}
+
+export interface XRSupport {
+  vr: boolean;
+  ar: boolean;
+}
+
+export interface EnterVROptions {
+  /** Start at this viewpoint instead of below the desktop camera. */
+  viewpoint?: string;
+}
+
+export interface EnterAROptions {
+  /** Initial model scale; one of `ar.scales`. */
+  scale?: number;
+}
+
+/** Events the kit emits, with their payloads. */
+export interface KitEvents {
+  sessionstart: { mode: XRMode };
+  sessionend: { mode: XRMode };
+  /** The user was moved; `position` is the floor point below the head, in scene coordinates. */
+  teleport: { position: Vector3 };
+  viewpoint: { id: string };
+  /** The model was placed in AR; `matrix` is its new world matrix. */
+  placed: { matrix: Matrix4 };
+  /** A select (trigger, pinch, tap) on the scene. */
+  select: { object: Object3D | null; point: Vector3 | null; source: RayKind };
+}
+
+export interface XRKit {
+  /** What this browser and device can do. Show buttons only for what is true. */
+  supports(): Promise<XRSupport>;
+  /** Start a session. Must be called from a click or tap handler (WebXR user activation). */
+  enter(mode: "vr", options?: EnterVROptions): Promise<void>;
+  enter(mode: "ar", options?: EnterAROptions): Promise<void>;
+  /** End the session; the desktop camera returns to where it was. */
+  exit(): Promise<void>;
+  /** Teleport to a viewpoint (VR only). */
+  goTo(id: string): void;
+  /** Replace the viewpoints. */
+  setViewpoints(viewpoints: Viewpoint[]): void;
+  /** AR only: set the model scale, applied around the placed point. */
+  setScale(scale: number): void;
+  /** Call once per frame from the host's own animation loop, passing the XRFrame when there is one. */
+  update(frame?: XRFrame): void;
+  /** The active mode, or null on the desktop. */
+  readonly presenting: XRMode | null;
+  /** Subscribe to an event; returns the unsubscribe function. */
+  on<K extends keyof KitEvents>(event: K, listener: (payload: KitEvents[K]) => void): () => void;
+  /** End any session and remove everything the kit added. */
+  dispose(): void;
+}
