@@ -26,4 +26,5 @@ jobs:
       - run: pnpm exec biome ci .
       - run: pnpm typecheck
       - run: pnpm build
+      - run: pnpm size
       - run: pnpm test
