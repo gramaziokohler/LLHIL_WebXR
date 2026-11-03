@@ -1,0 +1,9 @@
+[
+  {
+    "name": "@gramaziokohler/llhil-webxr (ESM, three external)",
+    "path": "dist/index.js",
+    "import": "*",
+    "ignore": ["three"],
+    "limit": "25 kB"
+  }
+]

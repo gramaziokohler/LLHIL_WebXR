@@ -1,0 +1,71 @@
+name: release-please
+
+# Opens and updates the release PR from Conventional Commits on main; merging it
+# tags the release. Needs "Allow GitHub Actions to create and approve pull requests"
+# in the repository's Actions settings.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: true
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    # publishing waits for the npm scope maintainer
+    # When the scope is ready, replace with:
+    #   if: needs.release-please.outputs.release_created == 'true'
+    if: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # npm provenance (trusted publishing) signs with the OIDC token.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing requires npm >= 11.5.1.
+      - run: npm install -g npm@latest
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm exec biome ci .
+
+      - run: pnpm typecheck
+
+      - run: pnpm build
+
+      - run: pnpm test
+        env:
+          CI: true
+
+      - run: pnpm size
+
+      - name: publish to npm
+        run: npm publish --access public --provenance
