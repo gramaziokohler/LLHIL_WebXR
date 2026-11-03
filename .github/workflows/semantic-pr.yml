@@ -1,0 +1,22 @@
+name: semantic-pr-title
+
+# release-please derives versions and the changelog from squash-merge titles,
+# so every pull request title must be a Conventional Commit.
+on:
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+
+jobs:
+  main:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      # pull_request_target is safe here because nothing from the PR is checked out.
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
