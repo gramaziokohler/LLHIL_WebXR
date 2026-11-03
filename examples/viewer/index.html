@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LLHIL WebXR viewer</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <aside id="panel" class="panel">
+      <h1>WebXR viewer</h1>
+      <div id="xr" class="xr"></div>
+      <section>
+        <h2>Viewpoints</h2>
+        <ul id="viewpoints" class="viewpoints"></ul>
+      </section>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <p class="hint">Drop a <b>.glb</b> to view it, or a viewpoints <b>.json</b>.</p>
+      <footer>
+        <a id="up-toggle" href="?up=z">Z-up scene</a>
+        <span id="fps" class="fps"></span>
+      </footer>
+    </aside>
+    <div id="drop" class="drop" hidden>Drop a .glb or a viewpoints .json</div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

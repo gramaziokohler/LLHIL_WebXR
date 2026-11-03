@@ -1,0 +1,124 @@
+:root {
+  color-scheme: light;
+  font:
+    13px / 1.4 system-ui,
+    sans-serif;
+  color: #1f2328;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #dbe7f1;
+}
+
+canvas {
+  position: fixed;
+  inset: 0;
+  display: block;
+  touch-action: none;
+}
+
+.panel {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  width: 240px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.88);
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.12);
+}
+
+.panel h1 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.panel h2 {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #59636e;
+}
+
+.xr:empty::before {
+  content: "Checking for VR and AR\2026";
+  color: #59636e;
+}
+
+.xr button {
+  margin: 0 6px 6px 0;
+}
+
+.viewpoints {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.viewpoints button {
+  width: 100%;
+  margin: 2px 0;
+  padding: 5px 8px;
+  border: 1px solid #c9d1d9;
+  border-radius: 5px;
+  background: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.viewpoints button:hover {
+  background: #eef3f8;
+}
+
+.viewpoints .empty {
+  color: #59636e;
+}
+
+.status:empty {
+  display: none;
+}
+
+.status.error {
+  color: #a4261b;
+}
+
+.hint {
+  color: #59636e;
+}
+
+.panel footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.fps {
+  font-variant-numeric: tabular-nums;
+  color: #59636e;
+}
+
+.drop {
+  position: fixed;
+  inset: 12px;
+  display: grid;
+  place-items: center;
+  border: 3px dashed #4f7fb4;
+  border-radius: 12px;
+  background: rgb(79 127 180 / 0.15);
+  font-size: 18px;
+  pointer-events: none;
+}
+
+.drop[hidden] {
+  display: none;
+}
