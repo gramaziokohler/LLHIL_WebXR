@@ -58,6 +58,24 @@ canvas {
   margin: 0 6px 6px 0;
 }
 
+.onsite[hidden],
+.onsite [hidden] {
+  display: none;
+}
+
+.onsite button {
+  margin: 0 6px 6px 0;
+}
+
+.alignment-state {
+  margin: 0 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.alignment-state:empty {
+  display: none;
+}
+
 .viewpoints {
   margin: 0;
   padding: 0;
