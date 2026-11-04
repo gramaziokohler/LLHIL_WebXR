@@ -11,6 +11,7 @@ import {
   Vector3,
 } from "three";
 import type { ARController, KitContext, RaySource } from "./internal";
+import type { AlignmentNudge, AlignmentState, ARAlignment } from "./types";
 
 const DEG = Math.PI / 180;
 /** Thumbstick turn: fire beyond this, re-arm below the second (hysteresis, one step per push). */
@@ -405,7 +406,17 @@ export function createAR(ctx: KitContext): ARController {
     session = null;
   }
 
+  // K2: on-site alignment (stub until K2 lands; table-top placement is unchanged).
+  const alignmentState: AlignmentState | null = null;
   return {
+    setAlignment(_alignment: ARAlignment | null): void {},
+    realign(): void {},
+    nudge(_nudge: AlignmentNudge): void {},
+    saveAlignment: async () => false,
+    forgetAlignment: async (_id: string) => {},
+    get alignmentState() {
+      return alignmentState;
+    },
     /**
      * Model scale factor (1 = 1:1). Before a session it sets the initial scale; once placed it
      * rescales about the placed point. Non-positive values are ignored.
