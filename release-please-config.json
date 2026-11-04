@@ -4,7 +4,8 @@
   "bump-minor-pre-major": true,
   "packages": {
     ".": {
-      "package-name": "@gramaziokohler/llhil-webxr"
+      "package-name": "@gramaziokohler/llhil-webxr",
+      "initial-version": "0.1.0"
     }
   }
 }
