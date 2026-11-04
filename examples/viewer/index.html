@@ -10,12 +10,18 @@
     <aside id="panel" class="panel">
       <h1>WebXR viewer</h1>
       <div id="xr" class="xr"></div>
+      <div id="onsite" class="onsite" hidden>
+        <button id="onsite-enter" type="button">View in AR on site (1:1)</button>
+        <p id="alignment-state" class="alignment-state"></p>
+        <a id="forget" href="#">Forget saved alignment</a>
+      </div>
       <section>
         <h2>Viewpoints</h2>
         <ul id="viewpoints" class="viewpoints"></ul>
       </section>
       <p id="status" class="status" role="status" aria-live="polite"></p>
       <p class="hint">Drop a <b>.glb</b> to view it, or a viewpoints <b>.json</b>.</p>
+      <p id="onsite-hint" class="hint" hidden></p>
       <footer>
         <a id="up-toggle" href="?up=z">Z-up scene</a>
         <span id="fps" class="fps"></span>
