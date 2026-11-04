@@ -185,6 +185,8 @@ export interface TwoPointSolution {
 export interface AlignmentStore {
   /** The session can create and restore persistent anchors. */
   supported(session: XRSession): boolean;
+  /** A well-formed alignment is saved under `id` on this device (no session needed). */
+  has(id: string): boolean;
   /** Replaces the saved anchors of `id` by these two (A, B); false when anything failed. */
   save(session: XRSession, id: string, a: XRAnchor, b: XRAnchor): Promise<boolean>;
   /** The two anchors saved for `id`, restored in this session, or null (none saved, or not found here). */

@@ -16,8 +16,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 // The published name resolves through the Vite alias; tsc has no path mapping for it, so the
-// viewer imports the package entry relatively. Only the public API is used, plus the `ar` section
-// parser, which the entry does not re-export yet.
+// viewer imports the package entry relatively. Only the public API is used.
 import {
   type ARAlignment,
   createXRButtons,
@@ -25,13 +24,14 @@ import {
   directionFromYaw,
   type KitEvents,
   parseViewpointsFile,
+  parseViewpointsFileAR,
+  type ViewpointsFileAR,
   type UpAxis,
   type Viewpoint,
   type ViewpointsFile,
   type XRButtons,
   type XRKit,
 } from "../../src/index";
-import { parseViewpointsFileAR, type ViewpointsFileAR } from "../../src/viewpoints";
 import { createDemoScene, createLights, DEMO } from "./demo-scene";
 
 const params = new URLSearchParams(location.search);
@@ -305,10 +305,13 @@ function renderOnsite(): void {
     "model positions, then in AR point at A, then at B, and pull the trigger.";
 }
 
-/** Hides the file's `ar.hide` objects, by name, anywhere under the model. */
+/**
+ * Hides the file's `ar.hide` objects, by name, anywhere under the model. On the demo's own marks
+ * the demo hides its ground slab, so the real ground stays visible through passthrough.
+ */
 function hideForSite(): void {
   showHidden();
-  const names = new Set(fileAR?.hide ?? []);
+  const names = new Set(fileAR?.hide ?? (fileAR?.alignment ? [] : ["ground"]));
   if (!content || names.size === 0) return;
   const found = new Set<string>();
   content.model.traverse((o) => {

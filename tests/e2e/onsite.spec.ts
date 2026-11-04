@@ -194,7 +194,7 @@ async function startRawAR(page: Page): Promise<void> {
 
 test.describe("on site", () => {
   // enabled at integration when K1 to K4 land
-  test.fixme("entering on site with nothing saved waits for mark A", async ({ page }) => {
+  test("entering on site with nothing saved waits for mark A", async ({ page }) => {
     await openHarness(page, "ar", { alignment: true });
     await enterOnSite(page);
     expect(await page.evaluate(() => window.__kit.presenting)).toBe("ar");
@@ -206,7 +206,7 @@ test.describe("on site", () => {
   });
 
   // enabled at integration when K1 to K4 land
-  test.fixme("picking A then B aligns the model on the real marks", async ({ page }) => {
+  test("picking A then B aligns the model on the real marks", async ({ page }) => {
     await openHarness(page, "ar", { alignment: true });
     await enterOnSite(page);
     await waitForAlignmentState(page, "pick-a");
@@ -234,7 +234,7 @@ test.describe("on site", () => {
   });
 
   // enabled at integration when K1 to K4 land
-  test.fixme("nudge({ turnDeg: 1 }) turns the model about point A", async ({ page }) => {
+  test("nudge({ turnDeg: 1 }) turns the model about point A", async ({ page }) => {
     await openHarness(page, "ar", { alignment: true });
     await alignOnSite(page);
     const { a, b } = await alignment(page);
@@ -253,7 +253,7 @@ test.describe("on site", () => {
   });
 
   // enabled at integration when K1 to K4 land
-  test.fixme("a saved alignment is restored in the next session", async ({ page }) => {
+  test("a saved alignment is restored in the next session", async ({ page }) => {
     await openHarness(page, "ar", { alignment: true });
     await alignOnSite(page);
     expect(await page.evaluate(() => window.__kit.saveAlignment())).toBe(true);
@@ -277,7 +277,7 @@ test.describe("on site", () => {
   });
 
   // enabled at integration when K1 to K4 land
-  test.fixme("forgetAlignment drops the saved alignment", async ({ page }) => {
+  test("forgetAlignment drops the saved alignment", async ({ page }) => {
     await openHarness(page, "ar", { alignment: true });
     await alignOnSite(page);
     expect(await page.evaluate(() => window.__kit.saveAlignment())).toBe(true);
