@@ -100,6 +100,8 @@ export function createXRKit(options: XRKitOptions): XRKit {
   let pendingViewpoint: string | undefined;
   let savedModelScale: Vector3 | null = null;
   let lastTime = -1;
+  /** VR places the user once the first head pose exists, so the start lands exactly. */
+  let placePending = false;
 
   const session: SessionController = createSessionController(ctx, {
     onStart(xrSession, mode, base) {
@@ -114,7 +116,11 @@ export function createXRKit(options: XRKitOptions): XRKit {
       ctx.space.reset(base);
       active = modulesFor(mode);
       for (const m of active) m.start();
-      if (mode === "vr") placeAtStart();
+      // Place now (so the first frame is close) and again on the first frame with a head pose.
+      if (mode === "vr") {
+        placeAtStart();
+        placePending = true;
+      }
       lastTime = -1;
       ctx.events.emit("sessionstart", { mode });
     },
@@ -130,6 +136,7 @@ export function createXRKit(options: XRKitOptions): XRKit {
       ctx.session = null;
       ctx.mode = null;
       pendingViewpoint = undefined;
+      placePending = false;
       ctx.events.emit("sessionend", { mode });
     },
   });
@@ -137,8 +144,15 @@ export function createXRKit(options: XRKitOptions): XRKit {
   /** Starts at the pending viewpoint, else on the floor below the desktop camera, facing its way. */
   function placeAtStart(): void {
     if (pendingViewpoint) {
-      viewpoints.goTo(pendingViewpoint);
-      return;
+      try {
+        viewpoints.goTo(pendingViewpoint);
+        return;
+      } catch (error) {
+        console.warn(
+          `[llhil-webxr] ${(error as Error).message}; starting below the camera instead`,
+        );
+        pendingViewpoint = undefined;
+      }
     }
     const s = resolved.metresPerUnit;
     const eye = new Vector3();
@@ -183,7 +197,17 @@ export function createXRKit(options: XRKitOptions): XRKit {
       const now = performance.now();
       const dt = lastTime < 0 ? 0 : (now - lastTime) / 1000;
       lastTime = now;
-      for (const m of active) m.update(frame, dt);
+      const [first, ...rest] = active;
+      first?.update(frame, dt);
+      // The space module (first) has read the head; place the user exactly once it exists.
+      if (placePending && ctx.mode === "vr") {
+        const ref = ctx.renderer.xr.getReferenceSpace();
+        if (ref && frame.getViewerPose(ref)) {
+          placePending = false;
+          placeAtStart();
+        }
+      }
+      for (const m of rest) m.update(frame, dt);
     },
     get presenting() {
       return ctx.mode;
@@ -192,9 +216,9 @@ export function createXRKit(options: XRKitOptions): XRKit {
       return ctx.events.on(event, listener as (payload: AllEvents[K]) => void);
     },
     dispose(): void {
-      if (ctx.mode) void session.exit();
-      for (const m of [teleport, viewpoints, ar, ctx.input, ctx.space]) m.dispose();
+      // Ending the session first runs every module's stop() before its dispose().
       session.dispose();
+      for (const m of [teleport, viewpoints, ar, ctx.input, ctx.space]) m.dispose();
       root.removeFromParent();
       ctx.events.clear();
     },
