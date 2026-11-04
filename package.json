@@ -1,6 +1,6 @@
 {
   "name": "@gramaziokohler/llhil-webxr",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "WebXR for three.js scenes: VR at 1:1 with teleport and viewpoints, and AR placement.",
   "license": "MIT",
   "type": "module",
