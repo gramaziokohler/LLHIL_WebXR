@@ -11,7 +11,7 @@ import {
   type Object3D,
   Vector3,
 } from "three";
-import type { UpAxis, Viewpoint } from "../../src/index";
+import type { ARAlignment, UpAxis, Viewpoint } from "../../src/index";
 
 export interface DemoSceneOptions {
   up: UpAxis;
@@ -23,6 +23,8 @@ export interface DemoScene {
   /** Teleport targets: the ground slab, the mezzanine and the 18 steps. */
   floors: Object3D[];
   viewpoints: Viewpoint[];
+  /** The two on-site marks, A and B, on the ground slab; drawn as crosses named `alignment-a/b`. */
+  alignment: ARAlignment;
   bounds: Box3;
 }
 
@@ -81,6 +83,7 @@ export function createDemoScene({ up }: DemoSceneOptions): DemoScene {
     column: mat(0xdcd8d0),
     glass: mat(0xbfd3dc, { transparent: true, opacity: 0.35, depthWrite: false }),
     marker: mat(0x4f7fb4),
+    mark: mat(0xd9731f),
   };
 
   /** A box between two plan corners. */
@@ -199,8 +202,34 @@ export function createDemoScene({ up }: DemoSceneOptions): DemoScene {
     root.add(marker);
   }
 
+  // On-site marks at the inner corners of the west wing, room 1's south-west and room 2's
+  // north-east, about 12 m apart: the farther apart, the smaller the heading error on site.
+  const inset = t / 2 + 0.4;
+  const plan: Record<"a" | "b", Plan> = {
+    a: [w + inset, s + inset, 0],
+    b: [e - inset, n - inset, 0],
+  };
+  const alignment: ARAlignment = {
+    id: "demo",
+    a: m.point(plan.a).toArray(),
+    b: m.point(plan.b).toArray(),
+    labels: { a: "A, south-west corner", b: "B, north-east corner" },
+  };
+  // A flat cross centred on each mark, 0.6 m across and 1 cm thick, sitting on the slab. The
+  // north-south bar is two halves, so the bars do not overlap.
+  const arm = 0.3;
+  const bar = 0.02;
+  const lift = 0.01;
+  for (const key of ["a", "b"] as const) {
+    const [pe, pn] = plan[key];
+    const name = `alignment-${key}`;
+    box(`${name}-1`, [pe - arm, pn - bar, 0], [pe + arm, pn + bar, lift], materials.mark);
+    box(`${name}-2`, [pe - bar, pn + bar, 0], [pe + bar, pn + arm, lift], materials.mark);
+    box(`${name}-3`, [pe - bar, pn - arm, 0], [pe + bar, pn - bar, lift], materials.mark);
+  }
+
   root.add(createLights(up));
   root.updateMatrixWorld(true);
   const bounds = new Box3().setFromObject(root);
-  return { root, floors, viewpoints, bounds };
+  return { root, floors, viewpoints, alignment, bounds };
 }

@@ -16,11 +16,14 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 // The published name resolves through the Vite alias; tsc has no path mapping for it, so the
-// viewer imports the package entry relatively. Only the public API is used.
+// viewer imports the package entry relatively. Only the public API is used, plus the `ar` section
+// parser, which the entry does not re-export yet.
 import {
+  type ARAlignment,
   createXRButtons,
   createXRKit,
   directionFromYaw,
+  type KitEvents,
   parseViewpointsFile,
   type UpAxis,
   type Viewpoint,
@@ -28,6 +31,7 @@ import {
   type XRButtons,
   type XRKit,
 } from "../../src/index";
+import { parseViewpointsFileAR, type ViewpointsFileAR } from "../../src/viewpoints";
 import { createDemoScene, createLights, DEMO } from "./demo-scene";
 
 const params = new URLSearchParams(location.search);
@@ -43,7 +47,14 @@ const ui = {
   fps: el("fps"),
   upToggle: el<HTMLAnchorElement>("up-toggle"),
   drop: el("drop"),
+  onsite: el("onsite"),
+  onsiteEnter: el<HTMLButtonElement>("onsite-enter"),
+  alignmentState: el("alignment-state"),
+  forget: el<HTMLAnchorElement>("forget"),
+  onsiteHint: el("onsite-hint"),
 };
+
+const ONSITE_LABEL = "View in AR on site (1:1)";
 
 // --- Renderer, scene, desktop camera -----------------------------------------------------------
 
@@ -92,6 +103,10 @@ let viewpointsFromFile = false;
 let metresPerUnit = 1;
 let kit: XRKit | null = null;
 let buttons: XRButtons | null = null;
+/** On site: the demo's marks, or the loaded viewpoints file's `ar` section, which wins. */
+let demoAlignment: ARAlignment | null = null;
+let fileAR: ViewpointsFileAR | null = null;
+let arSupported = false;
 
 /** The kit takes its model, floors and units at creation, so a new model means a new kit. */
 function rebuildKit(): void {
@@ -110,7 +125,26 @@ function rebuildKit(): void {
     viewpoints,
   });
   kit.on("sessionend", onResize);
+  kit.on("sessionstart", renderOnsite);
+  kit.on("sessionend", () => {
+    showHidden();
+    onsiteActive = false;
+    renderOnsite();
+  });
+  kit.on("alignment", onAlignment);
   buttons = createXRButtons(kit, ui.xr);
+  ui.alignmentState.textContent = "";
+  arSupported = false;
+  renderOnsite();
+  const current = kit;
+  current
+    .supports()
+    .catch(() => ({ vr: false, ar: false }))
+    .then((support) => {
+      if (kit !== current) return;
+      arSupported = support.ar;
+      renderOnsite();
+    });
 }
 
 function setContent(next: Content): void {
@@ -131,6 +165,7 @@ function setContent(next: Content): void {
 function showDemo(): void {
   const demo = createDemoScene({ up });
   if (!viewpointsFromFile) viewpoints = demo.viewpoints;
+  demoAlignment = demo.alignment;
   setContent({ model: demo.root, floors: demo.floors, extra: null });
 }
 
@@ -140,6 +175,7 @@ function showModel(model: Object3D, name: string): void {
   }
   // Viewpoints of the demo do not belong to another model.
   if (!viewpointsFromFile) viewpoints = [];
+  demoAlignment = null;
   setContent({ model, floors: "auto", extra: createLights(up) });
   setStatus(`Showing ${name}.`);
 }
@@ -225,6 +261,120 @@ function renderViewpoints(): void {
   }
 }
 
+// --- AR on site (1:1) ---------------------------------------------------------------------------
+
+/** True while the running session was entered on site, so its button reads "Exit". */
+let onsiteActive = false;
+let onsiteBusy = false;
+/** Objects hidden for the on-site session, shown again when it ends. */
+let hidden: Object3D[] = [];
+
+const currentAlignment = (): ARAlignment | null => fileAR?.alignment ?? demoAlignment;
+
+/** A kit method that throws synchronously still lands in the rejection handler. */
+function attempt<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return fn();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
+const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** "A, south-west corner" stays as it is; "gate" becomes "B: gate". */
+function markName(key: "a" | "b", alignment: ARAlignment): string {
+  const letter = key.toUpperCase();
+  const label = alignment.labels?.[key];
+  if (!label) return letter;
+  return new RegExp(`^${letter}\\b`).test(label) ? label : `${letter}: ${label}`;
+}
+
+function renderOnsite(): void {
+  const alignment = currentAlignment();
+  ui.onsite.hidden = !(alignment && arSupported);
+  const presenting = kit?.presenting ?? null;
+  ui.onsiteEnter.textContent = onsiteActive && presenting ? "Exit" : ONSITE_LABEL;
+  ui.onsiteEnter.disabled = onsiteBusy || (presenting !== null && !onsiteActive);
+  ui.onsiteHint.hidden = !alignment;
+  if (!alignment) return;
+  const crosses = alignment === demoAlignment ? " (the orange crosses)" : "";
+  ui.onsiteHint.textContent =
+    `On site (1:1), two marks place the model: ${markName("a", alignment)}; ` +
+    `${markName("b", alignment)}${crosses}. Mark both on the real ground at exactly those ` +
+    "model positions, then in AR point at A, then at B, and pull the trigger.";
+}
+
+/** Hides the file's `ar.hide` objects, by name, anywhere under the model. */
+function hideForSite(): void {
+  showHidden();
+  const names = new Set(fileAR?.hide ?? []);
+  if (!content || names.size === 0) return;
+  const found = new Set<string>();
+  content.model.traverse((o) => {
+    if (!names.has(o.name)) return;
+    found.add(o.name);
+    if (o.visible) hidden.push(o);
+  });
+  for (const o of hidden) o.visible = false;
+  const missing = [...names].filter((name) => !found.has(name));
+  if (missing.length > 0) {
+    console.warn(`[viewer] ar.hide: nothing named ${missing.map((n) => `"${n}"`).join(", ")}`);
+  }
+}
+
+function showHidden(): void {
+  for (const o of hidden) o.visible = true;
+  hidden = [];
+}
+
+function onOnsiteClick(): void {
+  if (!kit || onsiteBusy) return;
+  if (onsiteActive && kit.presenting) {
+    attempt(() => kit!.exit()).catch((err) => setStatus(messageOf(err), true));
+    return;
+  }
+  const alignment = currentAlignment();
+  if (!alignment || kit.presenting) return;
+  hideForSite();
+  onsiteActive = true;
+  onsiteBusy = true;
+  renderOnsite();
+  // Called inside the click handler: WebXR needs the user activation.
+  const current = kit;
+  attempt(() => current.enter("ar", { alignment }))
+    .catch((err) => {
+      showHidden();
+      onsiteActive = false;
+      setStatus(`Could not start AR on site. ${messageOf(err)}`, true);
+    })
+    .finally(() => {
+      onsiteBusy = false;
+      renderOnsite();
+    });
+}
+ui.onsiteEnter.addEventListener("click", onOnsiteClick);
+
+function onAlignment({ state, errorM, restored }: KitEvents["alignment"]): void {
+  const error = errorM === null ? "" : `, error ${(errorM * 100).toFixed(1)} cm`;
+  const text = `Alignment: ${state}${error}${restored ? " (restored from this device)" : ""}`;
+  ui.alignmentState.textContent = text;
+  // The page is not visible inside a headset.
+  if (kit?.presenting) console.info(`[viewer] ${text}`);
+}
+
+ui.forget.addEventListener("click", (event) => {
+  event.preventDefault();
+  const alignment = currentAlignment();
+  if (!kit || !alignment) return;
+  const { id } = alignment;
+  const current = kit;
+  attempt(() => current.forgetAlignment(id)).then(
+    () => setStatus(`Forgot the alignment saved on this device for "${id}".`),
+    (err) => setStatus(`Could not forget the saved alignment. ${messageOf(err)}`, true),
+  );
+});
+
 // --- Loading ------------------------------------------------------------------------------------
 
 const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
@@ -279,14 +429,17 @@ async function loadModelFile(file: File): Promise<void> {
 /** Validates and applies a viewpoints file; returns it, or null after showing why not. */
 function applyViewpoints(json: unknown, source: string): ViewpointsFile | null {
   let file: ViewpointsFile;
+  let ar: ViewpointsFileAR | null;
   try {
     file = parseViewpointsFile(json);
+    ar = parseViewpointsFileAR(json);
   } catch (err) {
     setStatus(`${source} is not a valid viewpoints file. ${explain(err, "json")}`, true);
     return null;
   }
   viewpoints = file.viewpoints;
   viewpointsFromFile = true;
+  fileAR = ar;
   const units = file.metresPerUnit ?? 1;
   if (units !== metresPerUnit) {
     metresPerUnit = units;
@@ -295,7 +448,10 @@ function applyViewpoints(json: unknown, source: string): ViewpointsFile | null {
     kit?.setViewpoints(viewpoints);
   }
   renderViewpoints();
-  const count = `${viewpoints.length} viewpoint${viewpoints.length === 1 ? "" : "s"}`;
+  renderOnsite();
+  const count =
+    `${viewpoints.length} viewpoint${viewpoints.length === 1 ? "" : "s"}` +
+    (ar?.alignment ? " and an on-site alignment" : "");
   if (file.up && file.up !== up) {
     setStatus(
       `${source}: ${count}, written for a ${file.up.toUpperCase()}-up scene; this page is ` +
