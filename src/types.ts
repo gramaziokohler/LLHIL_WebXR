@@ -63,6 +63,36 @@ export interface AROptions {
   rotateStepDegrees?: number;
 }
 
+/**
+ * 1:1 on site: two reference points of the model, in scene coordinates and units, that are marked
+ * on the ground at the real place (survey points, building corners, column feet). The user
+ * points at each mark and pulls the trigger; the kit then places the model at 1:1 so both points
+ * coincide (heading and position from the two points, height from the ground hits).
+ */
+export interface ARAlignment {
+  /** Stable id, e.g. the POI that holds the points. A saved alignment is kept per id on the device. */
+  id: string;
+  a: [number, number, number];
+  b: [number, number, number];
+  /** What the marks are called on site, shown in the headset ("north-west corner"). */
+  labels?: { a?: string; b?: string };
+}
+
+/**
+ * Where the on-site alignment stands. `restoring`: looking for an alignment saved on this device;
+ * `pick-a` / `pick-b`: waiting for the user to point at a mark; `aligned`: placed, not yet saved;
+ * `saved`: placed and saved on this device; `lost`: a saved alignment could not be found here.
+ */
+export type AlignmentState = "restoring" | "pick-a" | "pick-b" | "aligned" | "saved" | "lost";
+
+/** A small correction of the alignment, by eye: a turn about up through point A, a move on the ground. */
+export interface AlignmentNudge {
+  /** Degrees, positive turns left (counter-clockwise seen from above). */
+  turnDeg?: number;
+  /** Metres on the ground, in the user's frame: [right, forward]. */
+  move?: [number, number];
+}
+
 export interface PerformanceOptions {
   /** WebXR framebuffer scale factor. Default 1. */
   framebufferScale?: number;
@@ -129,8 +159,10 @@ export interface EnterVROptions {
 }
 
 export interface EnterAROptions {
-  /** Initial model scale; one of `ar.scales`. */
+  /** Initial model scale for table-top placement; one of `ar.scales`. Ignored with `alignment`. */
   scale?: number;
+  /** 1:1 on site: align by two reference points instead of placing on a table. */
+  alignment?: ARAlignment;
 }
 
 /** Events the kit emits, with their payloads. */
@@ -142,6 +174,12 @@ export interface KitEvents {
   viewpoint: { id: string };
   /** The model was placed in AR; `matrix` is its new world matrix. */
   placed: { matrix: Matrix4 };
+  /**
+   * The on-site alignment changed state. `errorM` is the mismatch between the distance of the two
+   * reference points in the model and on the ground (null until both are picked); `restored` is
+   * true when the placement came from an alignment saved on this device.
+   */
+  alignment: { state: AlignmentState; errorM: number | null; restored: boolean };
   /** A select (trigger, pinch, tap) on the scene. */
   select: { object: Object3D | null; point: Vector3 | null; source: RayKind };
 }
@@ -160,6 +198,16 @@ export interface XRKit {
   setViewpoints(viewpoints: Viewpoint[]): void;
   /** AR only: set the model scale, applied around the placed point. */
   setScale(scale: number): void;
+  /** AR on site: start the alignment again (point at A, then B), dropping any saved one in use. */
+  realign(): void;
+  /** AR on site: a small correction by eye after aligning. */
+  nudge(nudge: AlignmentNudge): void;
+  /** AR on site: save the current alignment on this device (resolves false where unsupported). */
+  saveAlignment(): Promise<boolean>;
+  /** Forget an alignment saved on this device. */
+  forgetAlignment(id: string): Promise<void>;
+  /** The on-site alignment state, or null outside an on-site AR session. */
+  readonly alignmentState: AlignmentState | null;
   /** Call once per frame from the host's own animation loop, passing the XRFrame when there is one. */
   update(frame?: XRFrame): void;
   /** The active mode, or null on the desktop. */

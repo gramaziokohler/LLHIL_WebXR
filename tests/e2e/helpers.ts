@@ -1,9 +1,20 @@
 import { expect, type Page } from "@playwright/test";
-import type { HarnessEvent } from "./harness/harness";
+import type { AlignmentState } from "../../src/types";
+import type { HarnessAlignmentEvent, HarnessEvent } from "./harness/harness";
 
-/** Opens the harness and waits until it (and in AR, the synthetic room) is ready. */
-export async function openHarness(page: Page, mode: "vr" | "ar" = "vr"): Promise<void> {
-  await page.goto(mode === "ar" ? "/?mode=ar" : "/");
+type Vec3 = [number, number, number];
+
+/**
+ * Opens the harness and waits until it (and in AR, the synthetic room) is ready. With
+ * `alignment`, AR offers the harness's on-site alignment (id "e2e") through its own button.
+ */
+export async function openHarness(
+  page: Page,
+  mode: "vr" | "ar" = "vr",
+  options: { alignment?: boolean } = {},
+): Promise<void> {
+  const query = mode === "ar" ? (options.alignment ? "/?mode=ar&alignment=1" : "/?mode=ar") : "/";
+  await page.goto(query);
   await page.waitForFunction(() => document.body.dataset.ready === "true");
 }
 
@@ -67,6 +78,90 @@ export async function lookDown(page: Page, degrees: number): Promise<void> {
     window.__xrDevice.quaternion.set(Math.sin(half), 0, 0, Math.cos(half));
   }, degrees);
   await frames(page, 2);
+}
+
+/** Where the right controller aims from in the on-site specs: ahead of and below the head. */
+export const CONTROLLER_ORIGIN: Vec3 = [0.25, 1.5, -0.4];
+
+/** Yaw (left positive, 0 along -Z) and pitch (up positive) of the direction from `from` to `to`. */
+function yawPitch(from: Vec3, to: Vec3): { yawDeg: number; pitchDeg: number } {
+  const [dx, dy, dz] = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+  return {
+    yawDeg: (Math.atan2(-dx, -dz) * 180) / Math.PI,
+    pitchDeg: (Math.atan2(dy, Math.hypot(dx, dz)) * 180) / Math.PI,
+  };
+}
+
+/**
+ * Turns the headset and the right controller (from `CONTROLLER_ORIGIN`) towards a point of the
+ * emulator's global (`local-floor`) space, so whichever ray the kit hit-tests from meets it.
+ */
+export async function aimAt(page: Page, target: Vec3): Promise<void> {
+  const headAt = await page.evaluate(() => {
+    const p = window.__xrDevice.position;
+    return [p.x, p.y, p.z] as Vec3;
+  });
+  const head = yawPitch(headAt, target);
+  await page.evaluate(({ yawDeg, pitchDeg }) => {
+    const [p, y] = [(pitchDeg * Math.PI) / 360, (yawDeg * Math.PI) / 360];
+    const [sp, cp, sy, cy] = [Math.sin(p), Math.cos(p), Math.sin(y), Math.cos(y)];
+    window.__xrDevice.quaternion.set(cy * sp, sy * cp, -sy * sp, cy * cp);
+  }, head);
+  await poseController(page, "right", {
+    position: CONTROLLER_ORIGIN,
+    ...yawPitch(CONTROLLER_ORIGIN, target),
+  });
+  // Hit-test results for the new ray arrive with the next frames.
+  await frames(page, 3);
+}
+
+/** Aims at a real (emulated) floor point and pulls the right trigger there. */
+export async function pickPoint(page: Page, point: Vec3): Promise<void> {
+  await aimAt(page, point);
+  await pullTrigger(page, "right");
+}
+
+/** The alignment events recorded so far, from index `from` on. */
+export async function alignmentEvents(page: Page, from = 0): Promise<HarnessAlignmentEvent[]> {
+  return (await page.evaluate(() => window.__alignmentEvents)).slice(from);
+}
+
+/** Waits until the kit's alignment state is `state`. */
+export async function waitForAlignmentState(page: Page, state: AlignmentState): Promise<void> {
+  await page.waitForFunction((s) => window.__kit.alignmentState === s, state);
+}
+
+/**
+ * The model's world matrix (column-major). The harness model is the scene, which the kit cannot
+ * move; it moves the scene's content instead, so this is the world matrix of the ground's parent.
+ */
+export async function modelMatrix(page: Page): Promise<number[]> {
+  return page.evaluate(() => {
+    const parent = window.__scene.getObjectByName("ground")!.parent!;
+    parent.updateWorldMatrix(true, false);
+    return [...parent.matrixWorld.elements];
+  });
+}
+
+/** Applies a column-major 4x4 matrix to a point. */
+export function transformPoint(m: readonly number[], p: readonly number[]): Vec3 {
+  const [x, y, z] = p;
+  return [
+    m[0] * x + m[4] * y + m[8] * z + m[12],
+    m[1] * x + m[5] * y + m[9] * z + m[13],
+    m[2] * x + m[6] * y + m[10] * z + m[14],
+  ];
+}
+
+/** Yaw in degrees of a column-major matrix's turn about Y, the convention of `head()`. */
+export function yawOf(m: readonly number[]): number {
+  const [fx, fz] = [-m[8], -m[10]];
+  return (Math.atan2(-fx, -fz) * 180) / Math.PI;
+}
+
+/** Distance between two points. */
+export function distance(a: readonly number[], b: readonly number[]): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
 
 /** Presses and releases the trigger through the emulator, holding it for a few frames. */

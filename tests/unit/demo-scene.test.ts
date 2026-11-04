@@ -55,6 +55,43 @@ describe.each(["y", "z"] as const)("demo scene, %s up", (up) => {
     );
   });
 
+  it("puts both alignment marks on the ground slab top, more than 10 m apart", () => {
+    const { alignment } = demo;
+    expect(alignment.id).toBe("demo");
+    expect(alignment.labels).toEqual({ a: "A, south-west corner", b: "B, north-east corner" });
+    const ground = demo.floors.find((f) => f.name === "ground")!;
+    const slab = floor("ground");
+    const down = upOf(up).negate();
+    const raycaster = new Raycaster();
+    for (const p of [alignment.a, alignment.b]) {
+      const point = new Vector3(...p);
+      expect(height(point, up)).toBeCloseTo(0, 6);
+      // Straight down from above the mark, the slab's top is hit at the mark.
+      raycaster.set(point.clone().addScaledVector(upOf(up), 10), down);
+      const hit = raycaster.intersectObject(ground, false)[0];
+      expect(hit).toBeDefined();
+      expect(hit.point.distanceTo(point)).toBeCloseTo(0, 6);
+      expect(slab.containsPoint(point)).toBe(true);
+    }
+    expect(new Vector3(...alignment.a).distanceTo(new Vector3(...alignment.b))).toBeGreaterThan(10);
+  });
+
+  it("draws a cross at each alignment mark", () => {
+    for (const key of ["a", "b"] as const) {
+      const parts = demo.root.children.filter((o) => o.name.startsWith(`alignment-${key}-`));
+      expect(parts.length).toBeGreaterThan(0);
+      const cross = new Box3();
+      for (const o of parts) cross.union(new Box3().setFromObject(o));
+      const centre = cross.getCenter(new Vector3());
+      const mark = new Vector3(...demo.alignment[key]);
+      // Centred on the mark in plan, sitting on the slab.
+      const plan = (v: Vector3) => (up === "z" ? [v.x, v.y] : [v.x, v.z]);
+      expect(plan(centre)[0]).toBeCloseTo(plan(mark)[0], 6);
+      expect(plan(centre)[1]).toBeCloseTo(plan(mark)[1], 6);
+      expect(height(cross.min, up)).toBeCloseTo(0, 6);
+    }
+  });
+
   it("keeps the line of sight from each viewpoint free for a metre", () => {
     const raycaster = new Raycaster(undefined, undefined, 0, 1);
     for (const vp of demo.viewpoints) {
@@ -76,6 +113,22 @@ describe("demo scene up axes", () => {
     expect(z.max.y).toBeCloseTo(-y.min.z, 6);
     expect(z.min.z).toBeCloseTo(y.min.y, 6);
     expect(z.max.z).toBeCloseTo(y.max.y, 6);
+  });
+
+  it("places the alignment marks at the same plan points in both", () => {
+    const y = createDemoScene({ up: "y" }).alignment;
+    const z = createDemoScene({ up: "z" }).alignment;
+    expect(z.id).toBe(y.id);
+    expect(z.labels).toEqual(y.labels);
+    for (const key of ["a", "b"] as const) {
+      const [ex, h, mn] = y[key];
+      expect(z[key][0]).toBeCloseTo(ex, 6);
+      expect(z[key][1]).toBeCloseTo(-mn, 6);
+      expect(z[key][2]).toBeCloseTo(h, 6);
+    }
+    // A is south-west of B: east and north both grow from A to B.
+    expect(z.b[0]).toBeGreaterThan(z.a[0]);
+    expect(z.b[1]).toBeGreaterThan(z.a[1]);
   });
 
   it("places the same viewpoints in both, yaw unchanged", () => {

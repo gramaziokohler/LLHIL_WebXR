@@ -1,6 +1,17 @@
-import type { Group, Object3D, PerspectiveCamera, Scene, Vector3, WebGLRenderer } from "three";
+import type {
+  Group,
+  Matrix4,
+  Object3D,
+  PerspectiveCamera,
+  Scene,
+  Vector3,
+  WebGLRenderer,
+} from "three";
 import type { Emitter } from "./events";
 import type {
+  AlignmentNudge,
+  AlignmentState,
+  ARAlignment,
   AROptions,
   KitEvents,
   PerformanceOptions,
@@ -56,6 +67,8 @@ export interface KitContext {
   raycast: RaycastFn;
   /** Moves the user (T2). Always present; set before any module starts. */
   space: SpaceController;
+  /** In-headset text panel (src/hud.ts). */
+  hud: HudController;
   /** Rays from controllers, hands, transient pointers and screen taps (T3). */
   input: InputController;
   mode: XRMode | null;
@@ -143,6 +156,50 @@ export interface ViewpointsController extends KitModule {
 
 export interface ARController extends KitModule {
   setScale(scale: number): void;
+  /** Set before the session starts: on-site alignment instead of table-top placement (null clears). */
+  setAlignment(alignment: ARAlignment | null): void;
+  realign(): void;
+  nudge(nudge: AlignmentNudge): void;
+  saveAlignment(): Promise<boolean>;
+  forgetAlignment(id: string): Promise<void>;
+  readonly alignmentState: AlignmentState | null;
+}
+
+/** Result of the two-point solve (src/align.ts). */
+export interface TwoPointSolution {
+  /**
+   * Rigid world transform to apply to the model's resting world matrix: a turn about up and a
+   * translation, no scale. It maps the model points onto the measured points.
+   */
+  matrix: Matrix4;
+  /** Heading of the correction, degrees about up (positive turns left). */
+  yawDeg: number;
+  /** | distance(a, b) in the model - distance(a, b) on the ground |, metres. */
+  errorM: number;
+}
+
+/**
+ * Alignments saved on the device (src/persist.ts): WebXR persistent anchors at the two real points
+ * (Quest Browser), their handles kept in localStorage under the alignment id.
+ */
+export interface AlignmentStore {
+  /** The session can create and restore persistent anchors. */
+  supported(session: XRSession): boolean;
+  /** A well-formed alignment is saved under `id` on this device (no session needed). */
+  has(id: string): boolean;
+  /** Replaces the saved anchors of `id` by these two (A, B); false when anything failed. */
+  save(session: XRSession, id: string, a: XRAnchor, b: XRAnchor): Promise<boolean>;
+  /** The two anchors saved for `id`, restored in this session, or null (none saved, or not found here). */
+  restore(session: XRSession, id: string): Promise<{ a: XRAnchor; b: XRAnchor } | null>;
+  /** Deletes the saved anchors of `id` (from the device and from storage). */
+  forget(session: XRSession | null, id: string): Promise<void>;
+}
+
+/** A head-locked text panel in the headset (src/hud.ts): instructions and the accuracy readout. */
+export interface HudController extends KitModule {
+  /** Shows a title and up to three detail lines; replaces what was shown. */
+  show(title: string, lines?: readonly string[]): void;
+  hide(): void;
 }
 
 /** Factory signature every module file exports. */

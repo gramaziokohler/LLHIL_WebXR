@@ -15,6 +15,7 @@ import { upVector, yawFromDirection } from "./math";
 import { createDefaultRaycast } from "./raycast";
 import { createSessionController } from "./session";
 import { createSpace } from "./space";
+import { createHud } from "./hud";
 import { createTeleport } from "./teleport";
 import type {
   EnterAROptions,
@@ -29,7 +30,7 @@ import { createViewpoints } from "./viewpoints";
 
 export type * from "./types";
 export { createXRButtons, type XRButtons, type XRButtonsOptions } from "./buttons";
-export { parseViewpointsFile } from "./viewpoints";
+export { parseViewpointsFile, parseViewpointsFileAR, type ViewpointsFileAR } from "./viewpoints";
 export { directionFromYaw, forwardAtYawZero, yawFromDirection } from "./math";
 
 /** Applies every default. Exported for tests. */
@@ -87,6 +88,7 @@ export function createXRKit(options: XRKitOptions): XRKit {
   } as unknown as KitContext;
 
   ctx.space = createSpace(ctx);
+  ctx.hud = createHud(ctx);
   ctx.input = createInput(ctx);
   const teleport = createTeleport(ctx);
   const viewpoints: ViewpointsController = createViewpoints(ctx);
@@ -94,7 +96,9 @@ export function createXRKit(options: XRKitOptions): XRKit {
   viewpoints.set(resolved.viewpoints);
 
   const modulesFor = (mode: XRMode): KitModule[] =>
-    mode === "vr" ? [ctx.space, ctx.input, teleport, viewpoints] : [ctx.space, ctx.input, ar];
+    mode === "vr"
+      ? [ctx.space, ctx.input, teleport, viewpoints, ctx.hud]
+      : [ctx.space, ctx.input, ar, ctx.hud];
 
   let active: KitModule[] = [];
   let pendingViewpoint: string | undefined;
@@ -174,8 +178,11 @@ export function createXRKit(options: XRKitOptions): XRKit {
     async enter(mode: XRMode, opts?: EnterVROptions | EnterAROptions): Promise<void> {
       if (ctx.mode) throw new Error(`[llhil-webxr] already presenting (${ctx.mode})`);
       if (mode === "vr") pendingViewpoint = (opts as EnterVROptions | undefined)?.viewpoint;
-      if (mode === "ar")
-        ar.setScale((opts as EnterAROptions | undefined)?.scale ?? resolved.ar.defaultScale);
+      if (mode === "ar") {
+        const arOpts = opts as EnterAROptions | undefined;
+        ar.setAlignment(arOpts?.alignment ?? null);
+        ar.setScale(arOpts?.alignment ? 1 : (arOpts?.scale ?? resolved.ar.defaultScale));
+      }
       await session.enter(mode);
     },
     exit(): Promise<void> {
@@ -191,6 +198,21 @@ export function createXRKit(options: XRKitOptions): XRKit {
     },
     setScale(scale: number): void {
       ar.setScale(scale);
+    },
+    realign(): void {
+      if (ctx.mode === "ar") ar.realign();
+    },
+    nudge(n): void {
+      if (ctx.mode === "ar") ar.nudge(n);
+    },
+    saveAlignment(): Promise<boolean> {
+      return ctx.mode === "ar" ? ar.saveAlignment() : Promise.resolve(false);
+    },
+    forgetAlignment(id: string): Promise<void> {
+      return ar.forgetAlignment(id);
+    },
+    get alignmentState() {
+      return ctx.mode === "ar" ? ar.alignmentState : null;
     },
     update(frame?: XRFrame): void {
       if (!ctx.mode || !frame) return;
@@ -218,7 +240,7 @@ export function createXRKit(options: XRKitOptions): XRKit {
     dispose(): void {
       // Ending the session first runs every module's stop() before its dispose().
       session.dispose();
-      for (const m of [teleport, viewpoints, ar, ctx.input, ctx.space]) m.dispose();
+      for (const m of [teleport, viewpoints, ar, ctx.hud, ctx.input, ctx.space]) m.dispose();
       root.removeFromParent();
       ctx.events.clear();
     },
