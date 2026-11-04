@@ -6,3 +6,6 @@ playwright-report
 test-results
 *.log
 .DS_Store
+
+# Local models for headset tests, served by the viewer at /local/; never committed
+examples/viewer/public/local/

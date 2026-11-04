@@ -30,6 +30,16 @@ const mode = params.get("mode") === "ar" ? "ar" : "vr";
 const xrDevice = new XRDevice(metaQuest3);
 xrDevice.installRuntime({ forceInstall: true });
 
+// IWER 2.7 takes a raw matrix in getOffsetReferenceSpace, while the WebXR spec (and every
+// browser) takes an XRRigidTransform. Hand the emulator the transform's matrix so offsets work.
+{
+  const target = (globalThis as any).XRReferenceSpace.prototype;
+  const original = target.getOffsetReferenceSpace;
+  target.getOffsetReferenceSpace = function (offset: any) {
+    return original.call(this, offset && "matrix" in offset ? offset.matrix : offset);
+  };
+}
+
 // AR needs a synthetic room for hit-test; loaded only for ?mode=ar to keep VR runs lean.
 const environmentReady: Promise<void> =
   mode === "ar"
