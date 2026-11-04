@@ -1,0 +1,50 @@
+name: pages
+
+# Deploys the example viewer, so a headset can open it over HTTPS (WebXR needs a
+# secure context). GitHub Pages on a private repository needs an organisation plan
+# that allows it; otherwise this works once the repository is public.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a running deployment is allowed to finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - id: pages
+        uses: actions/configure-pages@v5
+      # The library first, in case the viewer resolves the package through dist.
+      - run: pnpm build
+      # A project site is served under /<repository>/, so asset URLs need that base.
+      - run: pnpm build:viewer --base "${{ steps.pages.outputs.base_path }}/"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: examples/viewer/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

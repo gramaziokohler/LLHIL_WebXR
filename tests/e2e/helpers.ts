@@ -1,0 +1,122 @@
+import { expect, type Page } from "@playwright/test";
+import type { HarnessEvent } from "./harness/harness";
+
+/** Opens the harness and waits until it (and in AR, the synthetic room) is ready. */
+export async function openHarness(page: Page, mode: "vr" | "ar" = "vr"): Promise<void> {
+  await page.goto(mode === "ar" ? "/?mode=ar" : "/");
+  await page.waitForFunction(() => document.body.dataset.ready === "true");
+}
+
+/**
+ * Waits for `count` frames: XR frames while a session runs (the emulator drives them from the
+ * session), window frames otherwise. Button and pose changes land on the next frame.
+ */
+export async function frames(page: Page, count = 3): Promise<void> {
+  await page.evaluate(async (n) => {
+    for (let i = 0; i < n; i++) {
+      const session = window.__xrDevice.activeSession;
+      await new Promise<void>((resolve) => {
+        if (session) session.requestAnimationFrame(() => resolve());
+        else requestAnimationFrame(() => resolve());
+      });
+    }
+  }, count);
+}
+
+/** The kit events recorded so far, optionally of one type. */
+export async function events(page: Page, type?: HarnessEvent["type"]): Promise<HarnessEvent[]> {
+  const all = await page.evaluate(() => window.__events);
+  return type ? all.filter((e) => e.type === type) : all;
+}
+
+/** Waits until the harness has recorded an event of this type and returns the latest one. */
+export async function waitForEvent(page: Page, type: HarnessEvent["type"]): Promise<HarnessEvent> {
+  await page.waitForFunction((t) => window.__events.some((e) => e.type === t), type);
+  const list = await events(page, type);
+  return list[list.length - 1];
+}
+
+/**
+ * Poses an emulated controller in the emulator's global space, which is the `local-floor` space.
+ * `pitchDeg` tilts the ray up (positive) or down (negative); `yawDeg` turns it left.
+ */
+export async function poseController(
+  page: Page,
+  hand: "left" | "right",
+  pose: { position: [number, number, number]; pitchDeg?: number; yawDeg?: number },
+): Promise<void> {
+  await page.evaluate(
+    ({ hand, pose }) => {
+      const c = window.__xrDevice.controllers[hand]!;
+      const p = ((pose.pitchDeg ?? 0) * Math.PI) / 360;
+      const y = ((pose.yawDeg ?? 0) * Math.PI) / 360;
+      // q = yaw(Y) * pitch(X), both as half angles.
+      const [sp, cp, sy, cy] = [Math.sin(p), Math.cos(p), Math.sin(y), Math.cos(y)];
+      c.position.set(...pose.position);
+      c.quaternion.set(cy * sp, sy * cp, -sy * sp, cy * cp);
+    },
+    { hand, pose },
+  );
+  await frames(page, 2);
+}
+
+/** Pitches the emulated headset down by `degrees`, keeping its position and yaw at zero. */
+export async function lookDown(page: Page, degrees: number): Promise<void> {
+  await page.evaluate((deg) => {
+    const half = (-deg * Math.PI) / 360;
+    window.__xrDevice.quaternion.set(Math.sin(half), 0, 0, Math.cos(half));
+  }, degrees);
+  await frames(page, 2);
+}
+
+/** Presses and releases the trigger through the emulator, holding it for a few frames. */
+export async function pullTrigger(page: Page, hand: "left" | "right" = "right"): Promise<void> {
+  const set = (value: number) =>
+    page.evaluate(
+      ({ hand, value }) => window.__xrDevice.controllers[hand]!.updateButtonValue("trigger", value),
+      { hand, value },
+    );
+  await set(1);
+  await frames(page, 5);
+  await set(0);
+  await frames(page, 5);
+}
+
+/** Moves a thumbstick through the emulator and holds it for a few frames. */
+export async function thumbstick(
+  page: Page,
+  hand: "left" | "right",
+  x: number,
+  y = 0,
+): Promise<void> {
+  await page.evaluate(
+    ({ hand, x, y }) => window.__xrDevice.controllers[hand]!.updateAxes("thumbstick", x, y),
+    { hand, x, y },
+  );
+  await frames(page, 5);
+}
+
+/**
+ * The head in scene coordinates, from three.js's XR camera: position and yaw in degrees
+ * (counter-clockwise seen from above, 0 along -Z), the convention of the kit's math.ts.
+ */
+export async function head(page: Page): Promise<{ position: number[]; yawDeg: number }> {
+  return page.evaluate(() => {
+    const e = window.__renderer.xr.getCamera().matrixWorld.elements;
+    // A camera looks along its local -Z: the negated third column.
+    const [fx, fz] = [-e[8], -e[10]];
+    return { position: [e[12], e[13], e[14]], yawDeg: (Math.atan2(-fx, -fz) * 180) / Math.PI };
+  });
+}
+
+/** Signed smallest difference b - a between two angles in degrees. */
+export function angleDelta(a: number, b: number): number {
+  return ((((b - a + 180) % 360) + 360) % 360) - 180;
+}
+
+/** Clicks the kit's button whose label matches, as a user would. */
+export async function clickXRButton(page: Page, name: RegExp): Promise<void> {
+  const button = page.getByRole("button", { name });
+  await expect(button).toBeVisible();
+  await button.click();
+}
