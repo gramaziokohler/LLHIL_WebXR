@@ -2,7 +2,13 @@
 // through the globals at the bottom of this file.
 // Relative, not the package name: typecheck runs before a build, so the package exports
 // (dist/) do not exist yet. The dev server config aliases the package name to the same file.
-import { createXRButtons, createXRKit, type KitEvents, type Viewpoint } from "../../../src/index";
+import {
+  type ARAlignment,
+  createXRButtons,
+  createXRKit,
+  type KitEvents,
+  type Viewpoint,
+} from "../../../src/index";
 import { metaQuest3, XRDevice } from "iwer";
 import {
   AmbientLight,
@@ -23,8 +29,28 @@ export interface HarnessEvent {
   payload: Record<string, unknown>;
 }
 
+/** What the harness records for every alignment event, in order. */
+export interface HarnessAlignmentEvent {
+  state: KitEvents["alignment"]["state"];
+  errorM: number | null;
+  restored: boolean;
+  time: number;
+}
+
 const params = new URLSearchParams(location.search);
 const mode = params.get("mode") === "ar" ? "ar" : "vr";
+
+// 1:1 on site (?mode=ar&alignment=1): two marks on the ground plane, 1.2 m apart, ahead of the
+// user on free floor of the synthetic living room (its front wall stands about 2.45 m ahead).
+const alignment: ARAlignment | null =
+  mode === "ar" && params.get("alignment") === "1"
+    ? {
+        id: "e2e",
+        a: [0, 0, -1],
+        b: [0, 0, -2.2],
+        labels: { a: "mark A", b: "mark B" },
+      }
+    : null;
 
 // The browser exposes a native navigator.xr on localhost; the emulator must replace it.
 const xrDevice = new XRDevice(metaQuest3);
@@ -92,6 +118,19 @@ const kit = createXRKit({
 });
 createXRButtons(kit, document.body);
 
+// The kit's buttons enter table-top AR; on site needs the alignment, so the harness adds its own.
+if (alignment) {
+  const button = document.createElement("button");
+  button.id = "enter-on-site";
+  button.textContent = "Align on site";
+  button.addEventListener("click", () => {
+    kit.enter("ar", { alignment }).catch((error) => {
+      button.dataset.error = (error as Error).message;
+    });
+  });
+  document.body.appendChild(button);
+}
+
 const events: HarnessEvent[] = [];
 const record = <K extends keyof KitEvents>(type: K, toJSON: (p: KitEvents[K]) => object) =>
   kit.on(type, (p) => {
@@ -107,6 +146,11 @@ record("select", (p) => ({
   point: p.point?.toArray() ?? null,
   source: p.source,
 }));
+
+const alignmentEvents: HarnessAlignmentEvent[] = [];
+kit.on("alignment", (p) => {
+  alignmentEvents.push({ ...p, time: performance.now() });
+});
 
 renderer.setAnimationLoop((_time, frame) => {
   kit.update(frame);
@@ -129,6 +173,9 @@ declare global {
     __scene: Scene;
     __camera: PerspectiveCamera;
     __mode: "vr" | "ar";
+    /** The on-site alignment the harness enters with (?mode=ar&alignment=1), else null. */
+    __alignment: ARAlignment | null;
+    __alignmentEvents: HarnessAlignmentEvent[];
     /** Resolves once the harness (and, in AR, the synthetic room) is ready. */
     __ready: Promise<void>;
   }
@@ -141,6 +188,8 @@ window.__renderer = renderer;
 window.__scene = scene;
 window.__camera = camera;
 window.__mode = mode;
+window.__alignment = alignment;
+window.__alignmentEvents = alignmentEvents;
 window.__ready = environmentReady.then(() => {
   document.body.dataset.ready = "true";
 });
