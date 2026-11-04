@@ -97,6 +97,15 @@ describe("createAlignmentStore", () => {
     expect(await store.restore(xr, "other")).toBeNull();
   });
 
+  it("has() says whether an alignment is saved, without a session", async () => {
+    const { session, store, xr } = setup();
+    expect(store.has("site")).toBe(false);
+    await store.save(xr, "site", asAnchor(session.anchor()), asAnchor(session.anchor()));
+    expect(store.has("site")).toBe(true);
+    await store.forget(null, "site");
+    expect(store.has("site")).toBe(false);
+  });
+
   it("saving again replaces the record and deletes the old handles", async () => {
     const { storage, session, store, xr } = setup();
     const a1 = session.anchor();

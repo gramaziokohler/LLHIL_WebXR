@@ -30,7 +30,7 @@ import { createViewpoints } from "./viewpoints";
 
 export type * from "./types";
 export { createXRButtons, type XRButtons, type XRButtonsOptions } from "./buttons";
-export { parseViewpointsFile } from "./viewpoints";
+export { parseViewpointsFile, parseViewpointsFileAR, type ViewpointsFileAR } from "./viewpoints";
 export { directionFromYaw, forwardAtYawZero, yawFromDirection } from "./math";
 
 /** Applies every default. Exported for tests. */

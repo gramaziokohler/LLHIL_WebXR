@@ -15,6 +15,7 @@ import type { ARController, KitContext, RaySource } from "./internal";
 import { forwardAtYawZero } from "./math";
 import { createAlignmentStore } from "./persist";
 import type { AlignmentNudge, AlignmentState, ARAlignment } from "./types";
+import { ANCHOR_TIMEOUT_MS, withTimeout } from "./timeout";
 
 const DEG = Math.PI / 180;
 /** Thumbstick turn: fire beyond this, re-arm below the second (hysteresis, one step per push). */
@@ -538,7 +539,14 @@ export function createAR(ctx: KitContext): ARController {
     } catch {
       supported = false;
     }
-    if (!s || !supported) {
+    // Nothing saved on this device: ask for the marks straight away instead of a "lost".
+    let saved = false;
+    try {
+      saved = supported && store.has(alignment.id);
+    } catch {
+      saved = false;
+    }
+    if (!s || !supported || !saved) {
       setState("pick-a");
       return;
     }
@@ -846,7 +854,13 @@ export function createAR(ctx: KitContext): ARController {
     const token = pickToken;
     let made: Promise<XRAnchor>[];
     try {
-      made = [pa, pb].map((p) => create(new XRRigidTransform({ x: p.x, y: p.y, z: p.z }), ref));
+      made = [pa, pb].map((p) =>
+        withTimeout(
+          create(new XRRigidTransform({ x: p.x, y: p.y, z: p.z }), ref),
+          ANCHOR_TIMEOUT_MS,
+          "anchor creation",
+        ),
+      );
     } catch {
       request.resolve(saveUnavailable());
       return;

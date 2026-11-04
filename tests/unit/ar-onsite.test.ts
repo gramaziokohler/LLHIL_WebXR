@@ -62,6 +62,7 @@ vi.mock("../../src/align", async () => {
 
 const store = vi.hoisted(() => ({
   supported: vi.fn((_session: unknown) => false),
+  has: vi.fn((_id: string) => true),
   save: vi.fn(async (_s: unknown, _id: string, _a: unknown, _b: unknown) => true),
   restore: vi.fn(async (_s: unknown, _id: string): Promise<unknown> => null),
   forget: vi.fn(async (_s: unknown, _id: string) => {}),
@@ -332,6 +333,7 @@ const stateNames = (t: ReturnType<typeof setup>) => t.states.map((s) => s.state)
 
 beforeEach(() => {
   store.supported.mockReset().mockReturnValue(false);
+  store.has.mockReset().mockReturnValue(true);
   store.save.mockReset().mockResolvedValue(true);
   store.restore.mockReset().mockResolvedValue(null);
   store.forget.mockReset().mockResolvedValue(undefined);
@@ -453,6 +455,15 @@ describe("on-site alignment: picking", () => {
 });
 
 describe("on-site alignment: restoring", () => {
+  it("asks for mark A straight away when nothing is saved on the device", async () => {
+    store.supported.mockReturnValue(true);
+    store.has.mockReturnValueOnce(false);
+    const t = setup();
+    await t.start();
+    expect(store.restore).not.toHaveBeenCalled();
+    expect(t.ar.alignmentState).toBe("pick-a");
+  });
+
   it("restores a saved alignment from its anchors and places the model by them", async () => {
     const a = fakeAnchor();
     const b = fakeAnchor();

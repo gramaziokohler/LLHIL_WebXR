@@ -1,6 +1,7 @@
 // Alignments saved on the device as WebXR persistent anchors (Quest Browser). The anchors live on
 // the device; only their handles (UUIDs) are kept in storage, under the alignment id.
 import type { AlignmentStore } from "./internal";
+import { ANCHOR_TIMEOUT_MS, withTimeout } from "./timeout";
 
 const KEY_PREFIX = "llhil-webxr:alignment:";
 
@@ -48,6 +49,9 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
   }
 
   const store: AlignmentStore = {
+    has(id) {
+      return read(id) !== null;
+    },
     supported(session) {
       try {
         return (
@@ -100,8 +104,8 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
         if (list && !(list.includes(record.a) && list.includes(record.b))) return null;
         const restore = session.restorePersistentAnchor as (uuid: string) => Promise<XRAnchor>;
         const [ra, rb] = await Promise.allSettled([
-          restore.call(session, record.a),
-          restore.call(session, record.b),
+          withTimeout(restore.call(session, record.a), ANCHOR_TIMEOUT_MS, "anchor restore"),
+          withTimeout(restore.call(session, record.b), ANCHOR_TIMEOUT_MS, "anchor restore"),
         ]);
         if (ra.status === "fulfilled" && rb.status === "fulfilled") {
           return { a: ra.value, b: rb.value };
@@ -150,7 +154,11 @@ async function requestHandle(anchor: XRAnchor): Promise<string> {
   if (typeof anchor?.requestPersistentHandle !== "function") {
     throw new Error("persistent handles unsupported");
   }
-  const uuid = await anchor.requestPersistentHandle();
+  const uuid = await withTimeout(
+    anchor.requestPersistentHandle(),
+    ANCHOR_TIMEOUT_MS,
+    "persistent handle",
+  );
   if (typeof uuid !== "string" || uuid === "") throw new Error("invalid persistent handle");
   return uuid;
 }
