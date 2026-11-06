@@ -14,6 +14,7 @@ import type {
   ARAlignment,
   AROptions,
   KitEvents,
+  LocomotionOptions,
   PerformanceOptions,
   RaycastFn,
   RayKind,
@@ -31,7 +32,7 @@ export interface ResolvedOptions {
   up: UpAxis;
   floors: "auto" | Object3D[];
   viewpoints: Viewpoint[];
-  vr: Required<VROptions>;
+  vr: Required<Omit<VROptions, "locomotion">> & { locomotion: LocomotionOptions };
   ar: Required<AROptions>;
   performance: Required<PerformanceOptions>;
   controllerModels: boolean;
@@ -73,6 +74,11 @@ export interface KitContext {
   input: InputController;
   mode: XRMode | null;
   session: XRSession | null;
+  /**
+   * True while an in-headset UI (the VR menu) owns the controllers: thumbstick locomotion,
+   * turning and teleport all stand still. Default false.
+   */
+  uiCapture: boolean;
 }
 
 /**
@@ -96,12 +102,24 @@ export interface SpaceController extends KitModule {
   /** Called once per session with the base reference space, before any module starts. */
   reset(base: XRReferenceSpace): void;
   /**
+   * Counts the moves of the user: incremented by every `placeUser` and `moveBy` (walking and
+   * flying). A deferred correction made for an older value is stale and must be skipped.
+   */
+  readonly generation: number;
+  /**
    * Moves the user so the floor point below the head lands on `floorPoint` (scene coordinates),
    * facing `yawDeg` (spec convention, see `Viewpoint.yaw`). Without `yawDeg` the facing is kept.
    */
   placeUser(floorPoint: Vector3, yawDeg?: number): void;
   /** Turns the user by `deltaDeg` around the head (positive turns left). */
   snapTurn(deltaDeg: number): void;
+  /** Moves the user by `delta` (scene coordinates), turning nothing. */
+  moveBy(delta: Vector3): void;
+  /**
+   * The head now, allocation-free: the eye, the unit view direction (up and down included) and
+   * the floor point below the eye, all in scene coordinates, written into the given vectors.
+   */
+  headInto(eye: Vector3, forward: Vector3, floorPoint: Vector3): void;
   /** The head now: eye and the floor point below it in scene coordinates, and its yaw. */
   head(): { eye: Vector3; floorPoint: Vector3; yawDeg: number };
 }

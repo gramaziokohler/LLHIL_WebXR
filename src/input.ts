@@ -30,6 +30,11 @@ const HAND_MESH_PATH =
 
 const FORWARD = new Vector3(0, 0, -1);
 
+/** xr-standard index of the top face button: B on the right controller, Y on the left. */
+export const MENU_BUTTON = 5;
+/** A press within this many milliseconds of the last reported one is contact bounce, not a press. */
+export const MENU_DEBOUNCE_MS = 250;
+
 type SpaceEvent = { data?: XRInputSource };
 
 interface Slot {
@@ -44,6 +49,10 @@ interface Slot {
   handMesh: Object3D | null;
   handSpheres: Object3D | null;
   listeners: Array<[string, (event: SpaceEvent) => void]>;
+  /** The menu button was down on the last poll. */
+  menuDown: boolean;
+  /** When the last `menu-button` was emitted (performance.now()), or -Infinity. */
+  menuAt: number;
 }
 
 /** Maps a WebXR input source to the kind of ray the kit reports. */
@@ -97,6 +106,22 @@ export function createInput(ctx: KitContext): InputController {
     ray.gamepad = slot.source?.gamepad ?? undefined;
   }
 
+  /** Emits `menu-button` on the press edge of the top face button, in VR; allocation-free. */
+  function pollMenu(slot: Slot): void {
+    const ray = slot.ray;
+    const pad = ray?.kind === "controller" ? ray.gamepad : undefined;
+    const pressed = pad?.buttons?.[MENU_BUTTON]?.pressed === true;
+    if (pressed && !slot.menuDown && ctx.mode === "vr" && ray) {
+      const hand = ray.handedness;
+      const now = performance.now();
+      if (hand !== "none" && now - slot.menuAt >= MENU_DEBOUNCE_MS) {
+        slot.menuAt = now;
+        ctx.events.emit("menu-button", { hand });
+      }
+    }
+    slot.menuDown = pressed;
+  }
+
   function rebuildRays(): void {
     rays.length = 0;
     if (!active) return;
@@ -121,6 +146,7 @@ export function createInput(ctx: KitContext): InputController {
       selecting: false,
       gamepad: source.gamepad ?? undefined,
     };
+    slot.menuDown = false;
     refresh(slot);
     updateLine(slot);
     rebuildRays();
@@ -240,6 +266,8 @@ export function createInput(ctx: KitContext): InputController {
         handMesh: null,
         handSpheres: null,
         listeners: [],
+        menuDown: false,
+        menuAt: Number.NEGATIVE_INFINITY,
       };
 
       if (controllerFactory) {
@@ -289,7 +317,11 @@ export function createInput(ctx: KitContext): InputController {
 
     update(_frame: XRFrame, _dt: number): void {
       if (!active) return;
-      for (const slot of slots) if (slot.ray) refresh(slot);
+      for (const slot of slots) {
+        if (!slot.ray) continue;
+        refresh(slot);
+        pollMenu(slot);
+      }
     },
 
     stop(): void {
@@ -298,6 +330,7 @@ export function createInput(ctx: KitContext): InputController {
         for (const object of objectsOf(slot)) ctx.root.remove(object);
         // The session's sources are gone with it; three disconnects them too, in either order.
         if (slot.ray) slot.ray.selecting = false;
+        slot.menuDown = false;
         slot.source = null;
         slot.ray = null;
         updateLine(slot);
