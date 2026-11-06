@@ -1,4 +1,7 @@
 import type { Matrix4, Object3D, PerspectiveCamera, Scene, Vector3, WebGLRenderer } from "three";
+import type { UiTheme } from "./theme";
+
+export type { UiTheme };
 
 /** The two immersive modes the kit offers. */
 export type XRMode = "vr" | "ar";
@@ -120,6 +123,51 @@ export type RaycastFn = (
   targets: "floors" | "all",
 ) => RaycastHit | null;
 
+/**
+ * A host entry in the VR menu. `action` (the default) emits `menu-select` with its id; `toggle`
+ * flips `value`, redraws and emits `menu-select` with the new value; `section` is a header row
+ * that groups the entries below it and cannot be selected.
+ */
+export interface MenuItem {
+  id: string;
+  label: string;
+  kind?: "action" | "toggle" | "section";
+  value?: boolean;
+  /** Drawn at the start of the row, `rowHeight - 2 * padding` square, untinted. */
+  icon?: CanvasImageSource;
+}
+
+/** Built-in sections of the VR menu. */
+export type MenuBuiltin = "viewpoints" | "locomotion" | "diagnostics" | "exit";
+
+/** Built-in menu rows a host can give an icon. */
+export type MenuIconSlot = "viewpoint" | "walk" | "fly" | "diagnostics" | "exit";
+
+export interface MenuOptions {
+  /**
+   * Built-in sections, in this order; leave one out to hide it. Default
+   * `["viewpoints", "locomotion", "diagnostics", "exit"]`. Locomotion and diagnostics show only
+   * where the kit offers them.
+   */
+  builtins?: MenuBuiltin[];
+  /**
+   * Host items (`setMenuItems`) before the built-in sections. Default false: after them, but
+   * before "exit" when "exit" is last.
+   */
+  hostItemsFirst?: boolean;
+  /** A title row above the list. Default none. */
+  title?: string;
+}
+
+/** Styling and structure of the in-headset panels, so they can match the host's own UI. */
+export interface UiOptions {
+  /** Overrides of the kit's neutral look; see `kit.setTheme` to change it later. */
+  theme?: Partial<UiTheme>;
+  /** Icons for the built-in menu rows. No icons by default. */
+  icons?: Partial<Record<MenuIconSlot, CanvasImageSource>>;
+  menu?: MenuOptions;
+}
+
 export interface XRKitOptions {
   renderer: WebGLRenderer;
   scene: Scene;
@@ -146,6 +194,8 @@ export interface XRKitOptions {
   hands?: boolean;
   /** Replace the default raycast, for example with the host's BVH. */
   raycast?: RaycastFn;
+  /** Look and structure of the in-headset menu and panels. */
+  ui?: UiOptions;
 }
 
 export interface XRSupport {
@@ -182,6 +232,10 @@ export interface KitEvents {
   alignment: { state: AlignmentState; errorM: number | null; restored: boolean };
   /** A select (trigger, pinch, tap) on the scene. */
   select: { object: Object3D | null; point: Vector3 | null; source: RayKind };
+  /** A host menu item was selected; `value` is the new value of a toggle. */
+  "menu-select": { id: string; value?: boolean };
+  /** The VR menu opened or closed. */
+  menu: { open: boolean };
 }
 
 export interface XRKit {
@@ -212,6 +266,15 @@ export interface XRKit {
   update(frame?: XRFrame): void;
   /** The active mode, or null on the desktop. */
   readonly presenting: XRMode | null;
+  /** VR: open the in-headset menu in front of the user (world-locked where it opens). */
+  openMenu(): void;
+  closeMenu(): void;
+  /** The VR menu is open. */
+  readonly menuOpen: boolean;
+  /** Replace the host's entries in the VR menu; redraws it when open. */
+  setMenuItems(items: MenuItem[]): void;
+  /** Change the look of the in-headset panels (merged into the current theme); redraws open ones. */
+  setTheme(patch: Partial<UiTheme>): void;
   /** Subscribe to an event; returns the unsubscribe function. */
   on<K extends keyof KitEvents>(event: K, listener: (payload: KitEvents[K]) => void): () => void;
   /** End any session and remove everything the kit added. */
