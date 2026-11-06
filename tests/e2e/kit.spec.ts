@@ -4,12 +4,12 @@ import {
   clickXRButton,
   events,
   frames,
+  gripTurn,
   head,
   lookDown,
   openHarness,
   poseController,
   pullTrigger,
-  thumbstick,
   waitForEvent,
 } from "./helpers";
 
@@ -83,13 +83,12 @@ test("teleport: a trigger pull on the floor moves the user there", async ({ page
   expect(Math.hypot(x - expected[0], z - expected[1])).toBeLessThan(0.3);
 });
 
-test("snap turn: the right thumbstick turns the head by 30 degrees", async ({ page }) => {
+test("snap turn: grip held + right thumbstick turns the head by 30 degrees", async ({ page }) => {
   await openHarness(page);
   await enterVR(page);
   const before = await head(page);
 
-  await thumbstick(page, "right", 1);
-  await thumbstick(page, "right", 0);
+  await gripTurn(page, "right", 1);
   await frames(page, 3);
 
   const after = await head(page);

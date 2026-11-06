@@ -10,6 +10,7 @@ import {
   type Viewpoint,
 } from "../../../src/index";
 import { metaQuest3, XRDevice } from "iwer";
+import { createDemoScene } from "../../../examples/viewer/demo-scene";
 import {
   AmbientLight,
   BoxGeometry,
@@ -81,22 +82,33 @@ const sun = new DirectionalLight(0xffffff, 1.2);
 sun.position.set(5, 10, 5);
 scene.add(sun);
 
-const ground = new Mesh(new PlaneGeometry(20, 20), new MeshStandardMaterial({ color: 0x8a8f86 }));
-ground.name = "ground";
-ground.rotation.x = -Math.PI / 2;
-scene.add(ground);
+// ?scene=demo: the example viewer's demo building (rooms, walls with doors, a stair), Y up.
+const demo = params.get("scene") === "demo" ? createDemoScene({ up: "y" }) : null;
 
-// A 3 m high block whose top is the floor of the "mezzanine" viewpoint.
-const mezzanine = new Mesh(new BoxGeometry(4, 3, 4), new MeshStandardMaterial({ color: 0xc9b38f }));
-mezzanine.name = "mezzanine";
-mezzanine.position.set(0, 1.5, -6);
-scene.add(mezzanine);
+let viewpoints: Viewpoint[];
+if (demo) {
+  scene.add(demo.root);
+  viewpoints = demo.viewpoints;
+} else {
+  const ground = new Mesh(new PlaneGeometry(20, 20), new MeshStandardMaterial({ color: 0x8a8f86 }));
+  ground.name = "ground";
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+
+  // A 3 m high block whose top is the floor of the "mezzanine" viewpoint.
+  const mezzanine = new Mesh(
+    new BoxGeometry(4, 3, 4),
+    new MeshStandardMaterial({ color: 0xc9b38f }),
+  );
+  mezzanine.name = "mezzanine";
+  mezzanine.position.set(0, 1.5, -6);
+  scene.add(mezzanine);
+  viewpoints = [
+    { id: "entrance", label: "Entrance", position: [0, 1.6, 5], yaw: 0 },
+    { id: "mezzanine", label: "Mezzanine", position: [0, 4.6, -6], yaw: 180 },
+  ];
+}
 scene.updateMatrixWorld(true);
-
-const viewpoints: Viewpoint[] = [
-  { id: "entrance", label: "Entrance", position: [0, 1.6, 5], yaw: 0 },
-  { id: "mezzanine", label: "Mezzanine", position: [0, 4.6, -6], yaw: 180 },
-];
 
 const camera = new PerspectiveCamera(60, innerWidth / innerHeight, 0.05, 200);
 camera.position.set(0, 1.6, 5);
@@ -112,6 +124,7 @@ const kit = createXRKit({
   scene,
   camera,
   viewpoints,
+  ...(demo ? { model: demo.root, floors: demo.floors } : {}),
   // Controller and hand models come from a CDN; the harness stays offline.
   controllerModels: false,
   hands: false,
@@ -141,6 +154,8 @@ record("sessionend", (p) => p);
 record("teleport", (p) => ({ position: p.position.toArray() }));
 record("viewpoint", (p) => p);
 record("placed", (p) => ({ matrix: [...p.matrix.elements] }));
+record("locomotion", (p) => p);
+record("menu-button", (p) => p);
 record("select", (p) => ({
   object: p.object?.name ?? null,
   point: p.point?.toArray() ?? null,
