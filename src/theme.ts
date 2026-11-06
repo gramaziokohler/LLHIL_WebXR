@@ -2,8 +2,10 @@
 // own neutral look; a host passes its own values at runtime so the panels match its browser UI.
 
 /**
- * Colours are CSS colour strings; sizes are canvas pixels on a panel 1024 px wide (0.5 m in the
- * headset, so 1 px is about 0.5 mm).
+ * Colours are CSS colour strings. Lengths (`radius`, `rowHeight`, `padding`, `letterSpacing`)
+ * are canvas pixels, at the resolution of the canvas of the panel that draws them: the menu and
+ * the HUD draw on canvases 1024 px wide (0.5 m in the headset, about 0.5 mm per px), the
+ * diagnostics panel on one 512 px wide.
  */
 export interface UiTheme {
   /** CSS font family. */
