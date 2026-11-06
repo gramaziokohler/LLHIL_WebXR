@@ -8,12 +8,18 @@ import type {
   WebGLRenderer,
 } from "three";
 import type { Emitter } from "./events";
+import type { UiTheme } from "./theme";
 import type {
   AlignmentNudge,
   AlignmentState,
   ARAlignment,
   AROptions,
+  FrameStats,
   KitEvents,
+  MenuBuiltin,
+  MenuIconSlot,
+  MenuItem,
+  LocomotionOptions,
   PerformanceOptions,
   RaycastFn,
   RayKind,
@@ -31,17 +37,31 @@ export interface ResolvedOptions {
   up: UpAxis;
   floors: "auto" | Object3D[];
   viewpoints: Viewpoint[];
-  vr: Required<VROptions>;
+  vr: Required<Omit<VROptions, "locomotion">> & { locomotion: LocomotionOptions };
   ar: Required<AROptions>;
   performance: Required<PerformanceOptions>;
   controllerModels: boolean;
   hands: boolean;
+  /** The host's `floorsReady`, or null: without it a missed floor is never retried. */
+  floorsReady: (() => boolean) | null;
+  diagnostics: { enabled: boolean; extra: (() => Record<string, string | number>) | null };
+  ui: {
+    icons: Partial<Record<MenuIconSlot, CanvasImageSource>>;
+    menu: { builtins: MenuBuiltin[]; hostItemsFirst: boolean; title: string | null };
+  };
 }
 
 /** Events modules send each other; not part of the public API. */
 export interface InternalEvents {
   selectstart: { ray: RaySource };
   selectend: { ray: RaySource };
+  /**
+   * The top face button (B or Y) was pressed; the locomotion module emits it, and it is public
+   * in `KitEvents` there. Declared here too so the menu builds on its own.
+   */
+  "menu-button": { hand: "left" | "right" };
+  /** `kit.setTheme` changed `ctx.theme`; panels redraw. */
+  theme: { theme: Readonly<UiTheme> };
 }
 
 export type AllEvents = KitEvents & InternalEvents;
@@ -67,12 +87,20 @@ export interface KitContext {
   raycast: RaycastFn;
   /** Moves the user (T2). Always present; set before any module starts. */
   space: SpaceController;
+  /** Look of the in-headset panels; replaced (never mutated) by `kit.setTheme`. */
+  theme: Readonly<UiTheme>;
   /** In-headset text panel (src/hud.ts). */
   hud: HudController;
   /** Rays from controllers, hands, transient pointers and screen taps (T3). */
   input: InputController;
   mode: XRMode | null;
   session: XRSession | null;
+  /**
+   * True while an in-headset UI (the VR menu) owns the controllers: thumbstick locomotion,
+   * turning and teleport all stand still, until the trigger that picked a menu row is released.
+   * Default false.
+   */
+  uiCapture: boolean;
 }
 
 /**
@@ -96,12 +124,25 @@ export interface SpaceController extends KitModule {
   /** Called once per session with the base reference space, before any module starts. */
   reset(base: XRReferenceSpace): void;
   /**
+   * Counts the moves of the user: incremented by every `placeUser` and `moveBy` (walking and
+   * flying; turning in place does not count). A deferred correction (the late floor) made for an
+   * older value is stale and must be skipped.
+   */
+  readonly generation: number;
+  /**
    * Moves the user so the floor point below the head lands on `floorPoint` (scene coordinates),
    * facing `yawDeg` (spec convention, see `Viewpoint.yaw`). Without `yawDeg` the facing is kept.
    */
   placeUser(floorPoint: Vector3, yawDeg?: number): void;
   /** Turns the user by `deltaDeg` around the head (positive turns left). */
   snapTurn(deltaDeg: number): void;
+  /** Moves the user by `delta` (scene coordinates), turning nothing. */
+  moveBy(delta: Vector3): void;
+  /**
+   * The head now, allocation-free: the eye, the unit view direction (up and down included) and
+   * the floor point below the eye, all in scene coordinates, written into the given vectors.
+   */
+  headInto(eye: Vector3, forward: Vector3, floorPoint: Vector3): void;
   /** The head now: eye and the floor point below it in scene coordinates, and its yaw. */
   head(): { eye: Vector3; floorPoint: Vector3; yawDeg: number };
 }
@@ -150,8 +191,30 @@ export interface ResolvedViewpoint {
 export interface ViewpointsController extends KitModule {
   set(viewpoints: Viewpoint[]): void;
   list(): readonly ResolvedViewpoint[];
-  /** Teleports to the viewpoint; throws on an unknown id. */
+  /** Teleports to the viewpoint, finding its floor now; throws on an unknown id. */
   goTo(id: string): void;
+  /**
+   * Places the user on the floor below `eye` (scene coordinates, metres), facing `yawDeg`. With
+   * no floor found, at `eye` minus the eye height; while `floorsReady()` is false the floor is
+   * looked for again each frame (see `XRKitOptions.floorsReady`).
+   */
+  placeBelow(eye: Vector3, yawDeg: number, options?: FloorSearch): void;
+}
+
+/** How `placeBelow` looks for the floor. */
+export interface FloorSearch {
+  /** Metres searched below the eye. Default 100. */
+  far?: number;
+  /** Accept any first hit, not only one within 30 degrees of horizontal. Default false. */
+  anySurface?: boolean;
+}
+
+/** The diagnostics panel and the frame timing behind it (src/diagnostics.ts). */
+export interface DiagnosticsController extends KitModule {
+  setEnabled(on: boolean): void;
+  readonly enabled: boolean;
+  /** Over the last second, or null outside a session and before the first frame interval. */
+  readonly stats: FrameStats | null;
 }
 
 export interface ARController extends KitModule {
@@ -200,6 +263,14 @@ export interface HudController extends KitModule {
   /** Shows a title and up to three detail lines; replaces what was shown. */
   show(title: string, lines?: readonly string[]): void;
   hide(): void;
+}
+
+/** The VR menu (src/menu.ts). */
+export interface MenuController extends KitModule {
+  open(): void;
+  close(): void;
+  readonly isOpen: boolean;
+  setItems(items: MenuItem[]): void;
 }
 
 /** Factory signature every module file exports. */

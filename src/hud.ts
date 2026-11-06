@@ -10,6 +10,7 @@ import {
   Vector3,
 } from "three";
 import type { HudController, KitContext } from "./internal";
+import { applyLetterSpacing, DEFAULT_THEME, fillBackground, fontOf, type UiTheme } from "./theme";
 
 /** Panel size in metres; the canvas has the same aspect ratio. */
 export const HUD_WIDTH = 0.5;
@@ -26,27 +27,29 @@ export const HUD_MAX_LINES = 3;
 /** Draws after everything else, so real geometry never hides it. */
 export const HUD_RENDER_ORDER = 10000;
 
-const FONT_FAMILY = "system-ui, sans-serif";
+/** The kit's own neutral type: the platform's sans-serif. */
+export const FONT_FAMILY = "system-ui, sans-serif";
 const TITLE_SIZE = 64;
 const LINE_SIZE = 42;
 const MIN_SCALE = 0.7;
-const PAD = 48;
 const GAP = 22;
 const LINE_GAP = 14;
-const RADIUS = 40;
 
-type Canvas2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+export type Canvas2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 /** A canvas with a 2D context, or null where there is none (Node, or a stubbed DOM). */
-function createCanvas(): { canvas: HTMLCanvasElement | OffscreenCanvas; g: Canvas2D } | null {
+export function createCanvas(
+  width = HUD_CANVAS_WIDTH,
+  height = HUD_CANVAS_HEIGHT,
+): { canvas: HTMLCanvasElement | OffscreenCanvas; g: Canvas2D } | null {
   try {
     let canvas: HTMLCanvasElement | OffscreenCanvas | null = null;
     if (typeof document !== "undefined" && typeof document.createElement === "function") {
       canvas = document.createElement("canvas");
-      canvas.width = HUD_CANVAS_WIDTH;
-      canvas.height = HUD_CANVAS_HEIGHT;
+      canvas.width = width;
+      canvas.height = height;
     } else if (typeof OffscreenCanvas !== "undefined") {
-      canvas = new OffscreenCanvas(HUD_CANVAS_WIDTH, HUD_CANVAS_HEIGHT);
+      canvas = new OffscreenCanvas(width, height);
     }
     if (!canvas) return null;
     const g = canvas.getContext("2d") as Canvas2D | null;
@@ -67,7 +70,14 @@ function noopHud(): HudController {
   };
 }
 
-function roundedRect(g: Canvas2D, x: number, y: number, w: number, h: number, r: number): void {
+export function roundedRect(
+  g: Canvas2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
   // arcTo rather than roundRect: older canvas implementations lack the latter.
   g.beginPath();
   g.moveTo(x + r, y);
@@ -82,9 +92,17 @@ function roundedRect(g: Canvas2D, x: number, y: number, w: number, h: number, r:
   g.closePath();
 }
 
-/** Shrinks the font to fit `maxWidth`, then cuts the text with an ellipsis if it still overflows. */
-function fitText(g: Canvas2D, text: string, size: number, weight: string, maxWidth: number) {
-  const font = (s: number) => `${weight} ${Math.round(s)}px ${FONT_FAMILY}`;
+/**
+ * Shrinks the font to fit `maxWidth`, then cuts the text with an ellipsis if it still overflows.
+ * `font` turns a size in px into a canvas font string; the fitted font is left set on `g`.
+ */
+export function fitText(
+  g: Canvas2D,
+  text: string,
+  size: number,
+  font: (sizePx: number) => string,
+  maxWidth: number,
+): string {
   g.font = font(size);
   if (typeof g.measureText !== "function") return text;
   let width = g.measureText(text).width;
@@ -98,29 +116,33 @@ function fitText(g: Canvas2D, text: string, size: number, weight: string, maxWid
   return cut.trimEnd() + "…";
 }
 
-function draw(g: Canvas2D, title: string, lines: readonly string[]): void {
+function draw(g: Canvas2D, theme: Readonly<UiTheme>, title: string, lines: readonly string[]) {
   const W = HUD_CANVAS_WIDTH;
   const H = HUD_CANVAS_HEIGHT;
+  const PAD = 2 * theme.padding;
   const maxWidth = W - 2 * PAD;
   g.clearRect(0, 0, W, H);
-  roundedRect(g, 4, 4, W - 8, H - 8, RADIUS);
-  g.fillStyle = "rgba(10, 12, 16, 0.85)";
-  g.fill();
+  roundedRect(g, 4, 4, W - 8, H - 8, Math.min(theme.radius, (H - 8) / 2));
+  fillBackground(g, theme);
   g.lineWidth = 4;
-  g.strokeStyle = "rgba(255, 255, 255, 0.35)";
+  g.strokeStyle = theme.accent;
   g.stroke();
+  applyLetterSpacing(g, theme);
+  const titleText = theme.uppercaseTitles ? title.toUpperCase() : title;
+  const titleFont = (s: number) => fontOf(theme, theme.titleWeight, s);
+  const lineFont = (s: number) => fontOf(theme, theme.fontWeight, s);
 
   // Centre the block of text vertically, whatever the number of lines.
   const block = TITLE_SIZE + (lines.length > 0 ? GAP : 0) + lines.length * (LINE_SIZE + LINE_GAP);
   let y = Math.max(PAD / 2, (H - block + (lines.length > 0 ? LINE_GAP : 0)) / 2);
   g.textAlign = "center";
   g.textBaseline = "top";
-  g.fillStyle = "#ffffff";
-  g.fillText(fitText(g, title, TITLE_SIZE, "bold", maxWidth), W / 2, y);
+  g.fillStyle = theme.text;
+  g.fillText(fitText(g, titleText, TITLE_SIZE, titleFont, maxWidth), W / 2, y);
   y += TITLE_SIZE + GAP;
   for (const line of lines) {
-    g.fillStyle = "rgba(255, 255, 255, 0.92)";
-    g.fillText(fitText(g, line, LINE_SIZE, "normal", maxWidth), W / 2, y);
+    g.fillStyle = theme.text;
+    g.fillText(fitText(g, line, LINE_SIZE, lineFont, maxWidth), W / 2, y);
     y += LINE_SIZE + LINE_GAP;
   }
 }
@@ -150,6 +172,16 @@ export function createHud(ctx: KitContext): HudController {
   mesh.matrixAutoUpdate = false;
 
   let drawnKey: string | null = null;
+  let shownTitle = "";
+  let shownLines: readonly string[] = [];
+  // Test contexts may omit the theme and the event bus.
+  const theme = () => ctx.theme ?? DEFAULT_THEME;
+  // kit.setTheme: redraw what is shown in the new look.
+  const offTheme = ctx.events?.on("theme", () => {
+    if (disposed || drawnKey === null) return;
+    draw(g, theme(), shownTitle, shownLines);
+    texture.needsUpdate = true;
+  });
   let snap = true;
   let disposed = false;
   const position = new Vector3();
@@ -180,7 +212,9 @@ export function createHud(ctx: KitContext): HudController {
       const shown = lines.slice(0, HUD_MAX_LINES);
       const key = JSON.stringify([title, shown]);
       if (key !== drawnKey) {
-        draw(g, title, shown);
+        shownTitle = title;
+        shownLines = shown;
+        draw(g, theme(), title, shown);
         texture.needsUpdate = true;
         drawnKey = key;
       }
@@ -228,6 +262,7 @@ export function createHud(ctx: KitContext): HudController {
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      offTheme?.();
       mesh.removeFromParent();
       geometry.dispose();
       material.dispose();

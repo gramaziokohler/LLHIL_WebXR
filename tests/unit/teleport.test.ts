@@ -271,104 +271,65 @@ describe("teleport by select", () => {
   });
 });
 
-describe("teleport by thumbstick", () => {
-  it("aims while the stick is forward and teleports on release", () => {
-    const t = setup();
-    const pad = gamepad([0, 0, 0, 0]);
-    const r = ray("c1", "controller", new Vector3(0, 1.5, 0), new Vector3(0, 0, -1), pad);
-    t.rays.push(r);
-    t.module.update(frame, 0.016);
-    expect(t.line()!.visible).toBe(false);
-    (pad.axes as number[])[3] = -0.9;
-    t.module.update(frame, 0.016);
-    expect(t.line()!.visible).toBe(true);
-    expect(t.marker()!.visible).toBe(true);
-    // Not yet released past the dead zone.
-    (pad.axes as number[])[3] = -0.4;
-    t.module.update(frame, 0.016);
-    expect(t.space.placeUser).not.toHaveBeenCalled();
-    (pad.axes as number[])[3] = 0;
-    t.module.update(frame, 0.016);
-    expect(t.space.placeUser).toHaveBeenCalledTimes(1);
-    expect(t.teleports).toHaveLength(1);
-    expect(t.line()!.visible).toBe(false);
-  });
-
-  it("reads axes[1] on a two-axis gamepad", () => {
-    const t = setup();
-    const pad = gamepad([0, -0.9]);
-    const r = ray("c1", "controller", new Vector3(0, 1.5, 0), new Vector3(0, 0, -1), pad);
-    t.rays.push(r);
-    t.module.update(frame, 0.016);
-    expect(t.line()!.visible).toBe(true);
-    (pad.axes as number[])[1] = 0;
-    t.module.update(frame, 0.016);
-    expect(t.space.placeUser).toHaveBeenCalledTimes(1);
-  });
-
-  it("cancels when the aiming source disappears", () => {
+describe("trigger only", () => {
+  it("the thumbstick neither aims nor teleports nor turns", () => {
     const t = setup();
     const pad = gamepad([0, 0, 0, -0.9]);
     const r = ray("c1", "controller", new Vector3(0, 1.5, 0), new Vector3(0, 0, -1), pad);
     t.rays.push(r);
     t.module.update(frame, 0.016);
-    t.rays.length = 0;
-    t.module.update(frame, 0.016);
     expect(t.line()!.visible).toBe(false);
+    (pad.axes as number[])[3] = 0;
+    (pad.axes as number[])[2] = 0.9;
+    t.module.update(frame, 0.016);
     expect(t.space.placeUser).not.toHaveBeenCalled();
+    expect(t.space.snapTurn).not.toHaveBeenCalled();
+    expect(t.teleports).toHaveLength(0);
+  });
+
+  it("the trigger (select) of a controller with a gamepad aims and teleports", () => {
+    const t = setup();
+    const pad = gamepad([0, 0, 0, 0]);
+    const r = ray("c1", "controller", new Vector3(0, 1.5, 0), new Vector3(0, 0, -1), pad);
+    t.rays.push(r);
+    t.events.emit("selectstart", { ray: r });
+    t.module.update(frame, 0.016);
+    expect(t.line()!.visible).toBe(true);
+    // Pushing the stick while aiming changes nothing.
+    (pad.axes as number[])[3] = -0.9;
+    t.module.update(frame, 0.016);
+    t.events.emit("selectend", { ray: r });
+    expect(t.space.placeUser).toHaveBeenCalledTimes(1);
+    expect(t.teleports).toHaveLength(1);
   });
 });
 
-describe("snap turn", () => {
-  it("turns once per push, right negative and left positive, and re-arms at centre", () => {
-    const t = setup({ vr: { snapDegrees: 45 } });
-    const pad = gamepad([0, 0, 0, 0]);
-    t.rays.push(ray("c1", "controller", new Vector3(0, 1.5, 0), new Vector3(0, 0, -1), pad));
-    const axes = pad.axes as number[];
-    axes[2] = 0.9;
-    t.module.update(frame, 0.016);
-    t.module.update(frame, 0.016);
-    axes[2] = 0.5; // still outside the re-arm zone
-    t.module.update(frame, 0.016);
-    axes[2] = 0.9;
-    t.module.update(frame, 0.016);
-    expect(t.space.snapTurn.mock.calls).toEqual([[-45]]);
-    axes[2] = 0.1;
-    t.module.update(frame, 0.016);
-    axes[2] = -0.8;
-    t.module.update(frame, 0.016);
-    t.module.update(frame, 0.016);
-    expect(t.space.snapTurn.mock.calls).toEqual([[-45], [45]]);
-  });
-
-  it("reads axes[0] on a two-axis gamepad", () => {
+describe("ui capture", () => {
+  it("no teleport while a UI has the controllers, and an aim in progress is dropped", () => {
     const t = setup();
-    t.rays.push(ray("c1", "controller", new Vector3(), new Vector3(0, 0, -1), gamepad([-0.9, 0])));
+    const r = ray("c1", "controller", new Vector3(0, 1.5, 0), new Vector3(0, 0, -1));
+    t.rays.push(r);
+    t.events.emit("selectstart", { ray: r });
     t.module.update(frame, 0.016);
-    expect(t.space.snapTurn.mock.calls).toEqual([[30]]);
-  });
-
-  it("does not turn while that hand aims forward", () => {
-    const t = setup();
-    const pad = gamepad([0, 0, 0.7, -0.7]);
-    t.rays.push(ray("c1", "controller", new Vector3(0, 1.5, 0), new Vector3(0, 0, -1), pad));
-    t.module.update(frame, 0.016);
-    expect(t.space.snapTurn).not.toHaveBeenCalled();
     expect(t.line()!.visible).toBe(true);
-  });
-
-  it("is off with vr.turn 'none'", () => {
-    const t = setup({ vr: { turn: "none" } });
-    t.rays.push(
-      ray("c1", "controller", new Vector3(), new Vector3(0, 0, -1), gamepad([0, 0, 0.9, 0])),
-    );
+    (t.ctx as { uiCapture: boolean }).uiCapture = true;
     t.module.update(frame, 0.016);
-    expect(t.space.snapTurn).not.toHaveBeenCalled();
+    expect(t.line()!.visible).toBe(false);
+    t.events.emit("selectend", { ray: r });
+    t.events.emit("selectstart", { ray: r });
+    t.events.emit("selectend", { ray: r });
+    expect(t.space.placeUser).not.toHaveBeenCalled();
+    // Free again: the trigger teleports.
+    (t.ctx as { uiCapture: boolean }).uiCapture = false;
+    t.events.emit("selectstart", { ray: r });
+    t.module.update(frame, 0.016);
+    t.events.emit("selectend", { ray: r });
+    expect(t.space.placeUser).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("options and modes", () => {
-  it("vr.teleport false disables teleport but keeps snap turn", () => {
+  it("vr.teleport false disables teleport", () => {
     const t = setup({ vr: { teleport: false } });
     const pad = gamepad([0, 0, 0, -0.9]);
     const r = ray("c1", "controller", new Vector3(0, 1.5, 0), new Vector3(0, 0, -1), pad);
@@ -380,9 +341,6 @@ describe("options and modes", () => {
     t.events.emit("selectend", { ray: r });
     t.module.update(frame, 0.016);
     expect(t.space.placeUser).not.toHaveBeenCalled();
-    (pad.axes as number[])[2] = 0.9;
-    t.module.update(frame, 0.016);
-    expect(t.space.snapTurn.mock.calls).toEqual([[-30]]);
   });
 
   it("is inactive in AR", () => {

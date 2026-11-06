@@ -1,12 +1,16 @@
 import { Group, type Object3D, Quaternion, Vector3 } from "three";
 import { createAR } from "./ar";
+import { createDiagnostics } from "./diagnostics";
 import { Emitter } from "./events";
 import { createInput } from "./input";
+import { createLocomotion, defaultLocomotion, patchLocomotion } from "./locomotion";
 import type {
   AllEvents,
   ARController,
+  DiagnosticsController,
   KitContext,
   KitModule,
+  MenuController,
   ResolvedOptions,
   SessionController,
   ViewpointsController,
@@ -16,11 +20,14 @@ import { createDefaultRaycast } from "./raycast";
 import { createSessionController } from "./session";
 import { createSpace } from "./space";
 import { createHud } from "./hud";
+import { createMenu } from "./menu";
+import { DEFAULT_THEME, mergeTheme } from "./theme";
 import { createTeleport } from "./teleport";
 import type {
   EnterAROptions,
   EnterVROptions,
   KitEvents,
+  LocomotionOptions,
   XRKit,
   XRKitOptions,
   XRMode,
@@ -32,9 +39,13 @@ export type * from "./types";
 export { createXRButtons, type XRButtons, type XRButtonsOptions } from "./buttons";
 export { parseViewpointsFile, parseViewpointsFileAR, type ViewpointsFileAR } from "./viewpoints";
 export { directionFromYaw, forwardAtYawZero, yawFromDirection } from "./math";
+export { DEFAULT_THEME } from "./theme";
 
 /** Applies every default. Exported for tests. */
 export function resolveOptions(options: XRKitOptions): ResolvedOptions {
+  const snapDegrees = options.vr?.snapDegrees ?? 30;
+  const locomotion = defaultLocomotion(snapDegrees);
+  patchLocomotion(locomotion, options.vr?.locomotion);
   return {
     model: options.model ?? options.scene,
     metresPerUnit: options.metresPerUnit ?? 1,
@@ -43,9 +54,10 @@ export function resolveOptions(options: XRKitOptions): ResolvedOptions {
     viewpoints: options.viewpoints ?? [],
     vr: {
       turn: options.vr?.turn ?? "snap",
-      snapDegrees: options.vr?.snapDegrees ?? 30,
+      snapDegrees,
       eyeHeight: options.vr?.eyeHeight ?? 1.6,
       teleport: options.vr?.teleport ?? true,
+      locomotion,
     },
     ar: {
       scales: options.ar?.scales ?? [1, 1 / 50, 1 / 100, 1 / 200],
@@ -56,9 +68,25 @@ export function resolveOptions(options: XRKitOptions): ResolvedOptions {
     performance: {
       framebufferScale: options.performance?.framebufferScale ?? 1,
       foveation: options.performance?.foveation ?? 1,
+      targetFrameRate: options.performance?.targetFrameRate ?? 72,
     },
     controllerModels: options.controllerModels ?? true,
     hands: options.hands ?? true,
+    floorsReady: options.floorsReady ?? null,
+    diagnostics: {
+      enabled: options.diagnostics?.enabled ?? false,
+      extra: options.diagnostics?.extra ?? null,
+    },
+    ui: {
+      icons: { ...options.ui?.icons },
+      menu: {
+        builtins: [
+          ...(options.ui?.menu?.builtins ?? ["viewpoints", "locomotion", "diagnostics", "exit"]),
+        ],
+        hostItemsFirst: options.ui?.menu?.hostItemsFirst ?? false,
+        title: options.ui?.menu?.title ?? null,
+      },
+    },
   };
 }
 
@@ -83,6 +111,8 @@ export function createXRKit(options: XRKitOptions): XRKit {
     root,
     up: upVector(resolved.up),
     raycast: options.raycast ?? createDefaultRaycast(floors, () => resolved.model, root),
+    theme: mergeTheme(DEFAULT_THEME, options.ui?.theme),
+    uiCapture: false,
     mode: null,
     session: null,
   } as unknown as KitContext;
@@ -90,15 +120,22 @@ export function createXRKit(options: XRKitOptions): XRKit {
   ctx.space = createSpace(ctx);
   ctx.hud = createHud(ctx);
   ctx.input = createInput(ctx);
+  const locomotion = createLocomotion(ctx);
   const teleport = createTeleport(ctx);
   const viewpoints: ViewpointsController = createViewpoints(ctx);
   const ar: ARController = createAR(ctx);
+  const diagnostics: DiagnosticsController = createDiagnostics(ctx);
   viewpoints.set(resolved.viewpoints);
+  // The menu acts on the kit itself, so it lights up the kit's locomotion and diagnostics.
+  const menu: MenuController = createMenu(ctx, {
+    viewpoints: () => viewpoints.list(),
+    host: () => kit,
+  });
 
   const modulesFor = (mode: XRMode): KitModule[] =>
     mode === "vr"
-      ? [ctx.space, ctx.input, teleport, viewpoints, ctx.hud]
-      : [ctx.space, ctx.input, ar, ctx.hud];
+      ? [ctx.space, ctx.input, locomotion, teleport, viewpoints, menu, ctx.hud, diagnostics]
+      : [ctx.space, ctx.input, ar, ctx.hud, diagnostics];
 
   let active: KitModule[] = [];
   let pendingViewpoint: string | undefined;
@@ -161,14 +198,12 @@ export function createXRKit(options: XRKitOptions): XRKit {
     const s = resolved.metresPerUnit;
     const eye = new Vector3();
     ctx.camera.getWorldPosition(eye).multiplyScalar(s);
-    const down = ctx.up.clone().negate();
-    const hit = ctx.raycast(eye, down, 1e5, "floors");
-    const floor = hit ? hit.point : eye.clone().addScaledVector(ctx.up, -resolved.vr.eyeHeight);
     // A camera looks along its local -Z, whatever its up vector.
     const dir = new Vector3(0, 0, -1).applyQuaternion(
       ctx.camera.getWorldQuaternion(new Quaternion()),
     );
-    ctx.space.placeUser(floor, yawFromDirection(dir, resolved.up));
+    // Whatever is below the camera, however far: a desktop view can be high above the model.
+    viewpoints.placeBelow(eye, yawFromDirection(dir, resolved.up), { far: 1e5, anySurface: true });
   }
 
   const kit: XRKit = {
@@ -214,6 +249,14 @@ export function createXRKit(options: XRKitOptions): XRKit {
     get alignmentState() {
       return ctx.mode === "ar" ? ar.alignmentState : null;
     },
+    setLocomotion(patch: Partial<LocomotionOptions>): void {
+      if (patchLocomotion(resolved.vr.locomotion, patch)) {
+        ctx.events.emit("locomotion", { mode: resolved.vr.locomotion.mode });
+      }
+    },
+    get locomotion(): Readonly<LocomotionOptions> {
+      return resolved.vr.locomotion;
+    },
     update(frame?: XRFrame): void {
       if (!ctx.mode || !frame) return;
       const now = performance.now();
@@ -234,13 +277,50 @@ export function createXRKit(options: XRKitOptions): XRKit {
     get presenting() {
       return ctx.mode;
     },
+    setDiagnostics(on: boolean): void {
+      diagnostics.setEnabled(on);
+    },
+    get diagnostics() {
+      return diagnostics.enabled;
+    },
+    get frameStats() {
+      return diagnostics.stats;
+    },
+    openMenu(): void {
+      if (ctx.mode === "vr") menu.open();
+    },
+    closeMenu(): void {
+      menu.close();
+    },
+    get menuOpen() {
+      return menu.isOpen;
+    },
+    setMenuItems(items) {
+      menu.setItems(items);
+    },
+    setTheme(patch) {
+      ctx.theme = mergeTheme(ctx.theme, patch);
+      ctx.events.emit("theme", { theme: ctx.theme });
+    },
     on<K extends keyof KitEvents>(event: K, listener: (payload: KitEvents[K]) => void) {
       return ctx.events.on(event, listener as (payload: AllEvents[K]) => void);
     },
     dispose(): void {
       // Ending the session first runs every module's stop() before its dispose().
       session.dispose();
-      for (const m of [teleport, viewpoints, ar, ctx.hud, ctx.input, ctx.space]) m.dispose();
+      for (const m of [
+        locomotion,
+        teleport,
+        viewpoints,
+        menu,
+        ar,
+        diagnostics,
+        ctx.hud,
+        ctx.input,
+        ctx.space,
+      ]) {
+        m.dispose();
+      }
       root.removeFromParent();
       ctx.events.clear();
     },

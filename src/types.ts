@@ -1,4 +1,7 @@
 import type { Matrix4, Object3D, PerspectiveCamera, Scene, Vector3, WebGLRenderer } from "three";
+import type { UiTheme } from "./theme";
+
+export type { UiTheme };
 
 /** The two immersive modes the kit offers. */
 export type XRMode = "vr" | "ar";
@@ -41,15 +44,44 @@ export interface ViewpointsFile {
   viewpoints: Viewpoint[];
 }
 
+/**
+ * How the thumbsticks move the user in VR. Both controllers are identical, so everything works
+ * with one hand: the stick walks (or flies), grip held plus stick left/right turns, the trigger
+ * teleports.
+ *
+ * - `"walk"`: the stick moves the user horizontally, relative to where the head looks, kept on the
+ *   floors (steps up to 0.35 m, falls smoothly down, never into the void) and stopped by walls.
+ * - `"fly"`: the stick moves along the full head direction, up and down included; walls still stop.
+ * - `"teleport"`: the stick does nothing but turning with the grip held.
+ */
+export type LocomotionMode = "walk" | "fly" | "teleport";
+
+export interface LocomotionOptions {
+  /** Default `"walk"`. */
+  mode: LocomotionMode;
+  /** Walking (and flying) speed at full stick, m/s. Default 1.4. */
+  speed: number;
+  /** Grip held plus stick left/right: snap turn in steps, or smooth turn. Default `"snap"`. */
+  turn: "snap" | "smooth";
+  /** Degrees per snap turn. Default `vr.snapDegrees` (30). */
+  snapDegrees: number;
+  /** Smooth turn rate at full stick, degrees per second. Default 90. */
+  smoothDegreesPerSecond: number;
+  /** Darken the edges of the view while moving or smooth-turning, for comfort. Default true. */
+  vignette: boolean;
+}
+
 export interface VROptions {
-  /** Snap turn on the thumbstick, or no turning. Default `"snap"`. */
+  /** Turning (grip held plus stick left/right), or no turning. Default `"snap"`. */
   turn?: "snap" | "none";
   /** Degrees per snap. Default 30. */
   snapDegrees?: number;
   /** Eye height in metres, used when no floor is found below a viewpoint. Default 1.6. */
   eyeHeight?: number;
-  /** Teleport on the floors. Default true. */
+  /** Teleport on the floors with the trigger (pinch with hands). Default true. */
   teleport?: boolean;
+  /** Thumbstick locomotion; see `LocomotionOptions` for the defaults. */
+  locomotion?: Partial<LocomotionOptions>;
 }
 
 export interface AROptions {
@@ -98,6 +130,27 @@ export interface PerformanceOptions {
   framebufferScale?: number;
   /** Fixed foveation, 0 (off) to 1 (maximum). Default 1. */
   foveation?: number;
+  /**
+   * Display refresh rate to ask for, Hz. Applied after the session starts where the browser
+   * offers it (`supportedFrameRates`), else the nearest lower rate it offers. Default 72.
+   */
+  targetFrameRate?: number;
+}
+
+export interface DiagnosticsOptions {
+  /** Show the diagnostics panel from the start. Default false. */
+  enabled?: boolean;
+  /** Extra lines for the panel, label to value. Called at most 4 times a second while it shows. */
+  extra?: () => Record<string, string | number>;
+}
+
+/** Frame timing over the last second. */
+export interface FrameStats {
+  fps: number;
+  /** Mean frame interval, milliseconds. */
+  frameMs: number;
+  /** Frames whose interval was over 1.5 times the target frame interval. */
+  missed: number;
 }
 
 /** A ray hit against the scene. */
@@ -119,6 +172,51 @@ export type RaycastFn = (
   far: number,
   targets: "floors" | "all",
 ) => RaycastHit | null;
+
+/**
+ * A host entry in the VR menu. `action` (the default) emits `menu-select` with its id; `toggle`
+ * flips `value`, redraws and emits `menu-select` with the new value; `section` is a header row
+ * that groups the entries below it and cannot be selected.
+ */
+export interface MenuItem {
+  id: string;
+  label: string;
+  kind?: "action" | "toggle" | "section";
+  value?: boolean;
+  /** Drawn at the start of the row, `rowHeight - 2 * padding` square, untinted. */
+  icon?: CanvasImageSource;
+}
+
+/** Built-in sections of the VR menu. */
+export type MenuBuiltin = "viewpoints" | "locomotion" | "diagnostics" | "exit";
+
+/** Built-in menu rows a host can give an icon. */
+export type MenuIconSlot = "viewpoint" | "walk" | "fly" | "diagnostics" | "exit";
+
+export interface MenuOptions {
+  /**
+   * Built-in sections, in this order; leave one out to hide it. Default
+   * `["viewpoints", "locomotion", "diagnostics", "exit"]`. Locomotion and diagnostics show only
+   * where the kit offers them.
+   */
+  builtins?: MenuBuiltin[];
+  /**
+   * Host items (`setMenuItems`) before the built-in sections. Default false: after them, but
+   * before "exit" when "exit" is last.
+   */
+  hostItemsFirst?: boolean;
+  /** A title row above the list. Default none. */
+  title?: string;
+}
+
+/** Styling and structure of the in-headset panels, so they can match the host's own UI. */
+export interface UiOptions {
+  /** Overrides of the kit's neutral look; see `kit.setTheme` to change it later. */
+  theme?: Partial<UiTheme>;
+  /** Icons for the built-in menu rows. No icons by default. */
+  icons?: Partial<Record<MenuIconSlot, CanvasImageSource>>;
+  menu?: MenuOptions;
+}
 
 export interface XRKitOptions {
   renderer: WebGLRenderer;
@@ -146,6 +244,16 @@ export interface XRKitOptions {
   hands?: boolean;
   /** Replace the default raycast, for example with the host's BVH. */
   raycast?: RaycastFn;
+  /**
+   * Whether `raycast` can find the floors yet, for hosts that build them after the session
+   * starts. While it returns false, a user placed at the fallback height (no floor found) is
+   * moved onto the floor once it is found, for up to 10 s, unless they moved meanwhile.
+   */
+  floorsReady?: () => boolean;
+  /** An in-headset panel with frame timing. Off by default. */
+  diagnostics?: DiagnosticsOptions;
+  /** Look and structure of the in-headset menu and panels. */
+  ui?: UiOptions;
 }
 
 export interface XRSupport {
@@ -182,6 +290,17 @@ export interface KitEvents {
   alignment: { state: AlignmentState; errorM: number | null; restored: boolean };
   /** A select (trigger, pinch, tap) on the scene. */
   select: { object: Object3D | null; point: Vector3 | null; source: RayKind };
+  /** A host menu item was selected; `value` is the new value of a toggle. */
+  "menu-select": { id: string; value?: boolean };
+  /** The VR menu opened or closed. */
+  menu: { open: boolean };
+  /** The locomotion mode changed (`kit.setLocomotion`). */
+  locomotion: { mode: LocomotionMode };
+  /**
+   * VR: the top face button of a controller was pressed (B on the right, Y on the left;
+   * xr-standard `buttons[5]`). Reserved for a menu; the kit itself does nothing else with it.
+   */
+  "menu-button": { hand: "left" | "right" };
 }
 
 export interface XRKit {
@@ -208,10 +327,32 @@ export interface XRKit {
   forgetAlignment(id: string): Promise<void>;
   /** The on-site alignment state, or null outside an on-site AR session. */
   readonly alignmentState: AlignmentState | null;
+  /**
+   * Changes the VR locomotion, now or for the next session; emits `locomotion` when the mode
+   * changes. Invalid values are ignored with a warning.
+   */
+  setLocomotion(patch: Partial<LocomotionOptions>): void;
+  /** The VR locomotion in use, every default applied. */
+  readonly locomotion: Readonly<LocomotionOptions>;
   /** Call once per frame from the host's own animation loop, passing the XRFrame when there is one. */
   update(frame?: XRFrame): void;
   /** The active mode, or null on the desktop. */
   readonly presenting: XRMode | null;
+  /** Show or hide the diagnostics panel (shown only while presenting). */
+  setDiagnostics(on: boolean): void;
+  /** Whether the diagnostics panel is on. */
+  readonly diagnostics: boolean;
+  /** Frame timing over the last second, or null outside a session. */
+  readonly frameStats: FrameStats | null;
+  /** VR: open the in-headset menu in front of the user (world-locked where it opens). */
+  openMenu(): void;
+  closeMenu(): void;
+  /** The VR menu is open. */
+  readonly menuOpen: boolean;
+  /** Replace the host's entries in the VR menu; redraws it when open. */
+  setMenuItems(items: MenuItem[]): void;
+  /** Change the look of the in-headset panels (merged into the current theme); redraws open ones. */
+  setTheme(patch: Partial<UiTheme>): void;
   /** Subscribe to an event; returns the unsubscribe function. */
   on<K extends keyof KitEvents>(event: K, listener: (payload: KitEvents[K]) => void): () => void;
   /** End any session and remove everything the kit added. */

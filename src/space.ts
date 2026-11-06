@@ -19,6 +19,7 @@ export function createSpace(ctx: KitContext): SpaceController {
   let base: XRReferenceSpace | null = null;
   const position = new Vector3();
   let thetaDeg = 0;
+  let generation = 0;
   // WebXR is Y up; a Z-up scene needs base +Y on scene +Z and base -Z on scene +Y.
   const upRotation = new Quaternion();
 
@@ -68,6 +69,10 @@ export function createSpace(ctx: KitContext): SpaceController {
   }
 
   return {
+    get generation() {
+      return generation;
+    },
+
     reset(nextBase: XRReferenceSpace): void {
       base = nextBase;
       setUpRotation();
@@ -82,6 +87,7 @@ export function createSpace(ctx: KitContext): SpaceController {
     placeUser(floorPoint: Vector3, yawDeg?: number): void {
       // AR moves the model, never the user.
       if (ctx.mode === "ar") return;
+      generation++;
       if (yawDeg !== undefined) {
         // Scene yaw = base yaw + theta: R_up maps the base yaw convention onto the scene's.
         thetaDeg = normalizeDegrees(yawDeg - yawFromDirection(forwardBase, "y"));
@@ -96,6 +102,20 @@ export function createSpace(ctx: KitContext): SpaceController {
       thetaDeg = normalizeDegrees(thetaDeg + deltaDeg);
       anchorHeadAt(tmp2);
       apply();
+    },
+
+    moveBy(delta: Vector3): void {
+      if (ctx.mode === "ar") return;
+      generation++;
+      position.add(delta);
+      apply();
+    },
+
+    headInto(eye: Vector3, forward: Vector3, floorPoint: Vector3): void {
+      rotation(q);
+      eye.copy(headBase).applyQuaternion(q).add(position);
+      forward.copy(forwardBase).applyQuaternion(q);
+      projectToPlane(eye, position, ctx.up, floorPoint);
     },
 
     head() {
