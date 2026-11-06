@@ -1,5 +1,5 @@
 import { Vector3 } from "three";
-import type { KitContext, ResolvedViewpoint, ViewpointsController } from "./internal";
+import type { FloorSearch, KitContext, ResolvedViewpoint, ViewpointsController } from "./internal";
 import type { ARAlignment, UpAxis, Viewpoint, ViewpointsFile } from "./types";
 
 const PREFIX = "[llhil-webxr] viewpoints:";
@@ -198,58 +198,121 @@ export function parseViewpointsFileAR(json: unknown): ViewpointsFileAR | null {
   return out;
 }
 
+/** How long a missed floor is looked for again while the host's floors are not ready, seconds. */
+export const FLOOR_RETRY_SECONDS = 10;
+
 /**
- * Viewpoints in VR. Floor points are resolved on `start()` (and on `set` while started), because
- * only then is the model scaled to metres and the floors in their session pose. Before `start()`
- * and after `stop()`, `list()` is empty.
+ * Viewpoints in VR. A viewpoint's floor is found when it is used (`goTo`, the start placement),
+ * not when it is set: only then is the model scaled to metres and, in hosts that build their
+ * collision model late, are the floors there at all. Before `start()` and after `stop()`,
+ * `list()` is empty.
  */
 export function createViewpoints(ctx: KitContext): ViewpointsController {
   let raw: Viewpoint[] = [];
-  let resolved: ResolvedViewpoint[] = [];
   let started = false;
 
-  function resolveOne(vp: Viewpoint): ResolvedViewpoint {
+  /** A user placed at the fallback height while the host's floors were not ready. */
+  let pending: {
+    eye: Vector3;
+    far: number;
+    anySurface: boolean;
+    generation: number;
+    elapsed: number;
+  } | null = null;
+
+  const down = new Vector3();
+  const origin = new Vector3();
+
+  /** The floor point below `eye` (scene coordinates, metres), or null. */
+  function findFloor(eye: Vector3, far: number, anySurface: boolean): Vector3 | null {
     const up = ctx.up;
-    const eye = new Vector3(...vp.position).multiplyScalar(ctx.options.metresPerUnit);
-    const origin = eye.clone().addScaledVector(up, RAY_LIFT);
-    const hit = ctx.raycast(origin, up.clone().negate(), RAY_FAR, "floors");
+    origin.copy(eye).addScaledVector(up, RAY_LIFT);
+    down.copy(up).negate();
+    const hit = ctx.raycast(origin, down, far, "floors");
+    if (!hit) return null;
     // A steep first hit (a wall, a sloped roof) is not a floor; fall back rather than search on.
-    const isFloor = hit && (hit.normal === null || hit.normal.dot(up) >= FLOOR_COS);
-    const floorPoint = isFloor
-      ? hit.point.clone()
-      : eye.clone().addScaledVector(up, -ctx.options.vr.eyeHeight);
+    if (!anySurface && hit.normal !== null && hit.normal.dot(up) < FLOOR_COS) return null;
+    return hit.point.clone();
+  }
+
+  const eyeOf = (vp: Viewpoint) =>
+    new Vector3(...vp.position).multiplyScalar(ctx.options.metresPerUnit);
+  const fallback = (eye: Vector3) => eye.clone().addScaledVector(ctx.up, -ctx.options.vr.eyeHeight);
+
+  function resolveOne(vp: Viewpoint): ResolvedViewpoint {
+    const eye = eyeOf(vp);
+    const floorPoint = findFloor(eye, RAY_FAR, false) ?? fallback(eye);
     return { id: vp.id, label: vp.label ?? vp.id, floorPoint, yaw: vp.yaw };
   }
 
-  function resolveAll(): void {
-    resolved = raw.map(resolveOne);
+  function placeBelow(eye: Vector3, yawDeg: number, options: FloorSearch = {}): void {
+    const far = options.far ?? RAY_FAR;
+    const anySurface = options.anySurface ?? false;
+    const floor = findFloor(eye, far, anySurface);
+    ctx.space.placeUser(floor ?? fallback(eye), yawDeg);
+    const ready = ctx.options.floorsReady;
+    pending =
+      !floor && ready && !ready()
+        ? { eye: eye.clone(), far, anySurface, generation: ctx.space.generation, elapsed: 0 }
+        : null;
+  }
+
+  /** Looks for the floor of a fallback placement again; moves the user up or down onto it. */
+  function retry(dt: number): void {
+    const p = pending;
+    if (!p) return;
+    // Moved on since (teleport, another viewpoint): the old floor no longer matters.
+    if (ctx.space.generation !== p.generation) {
+      pending = null;
+      return;
+    }
+    const floor = findFloor(p.eye, p.far, p.anySurface);
+    if (floor) {
+      pending = null;
+      // Only the height changes: steps taken in the room and turns made meanwhile are kept.
+      const at = ctx.space.head().floorPoint;
+      at.addScaledVector(ctx.up, floor.sub(at).dot(ctx.up));
+      ctx.space.placeUser(at);
+      ctx.events.emit("teleport", { position: at.clone() });
+      return;
+    }
+    p.elapsed += dt;
+    const ready = ctx.options.floorsReady;
+    // Ready and still nothing below: there is no floor there.
+    if (!ready || ready() || p.elapsed >= FLOOR_RETRY_SECONDS) pending = null;
   }
 
   return {
     set(viewpoints: Viewpoint[]): void {
       raw = [...viewpoints];
-      if (started) resolveAll();
     },
-    list: () => resolved,
+    /** Finds each floor now (one raycast per viewpoint); not meant for every frame. */
+    list: () => (started ? raw.map(resolveOne) : []),
     goTo(id: string): void {
       if (ctx.mode !== "vr") return;
-      const vp = resolved.find((v) => v.id === id);
+      const vp = raw.find((v) => v.id === id);
       if (!vp) throw new Error(`${PREFIX} unknown viewpoint "${id}"`);
-      ctx.space.placeUser(vp.floorPoint.clone(), vp.yaw);
+      placeBelow(eyeOf(vp), vp.yaw);
       ctx.events.emit("viewpoint", { id });
+    },
+    placeBelow(eye: Vector3, yawDeg: number, options?: FloorSearch): void {
+      if (ctx.mode !== "vr") return;
+      placeBelow(eye, yawDeg, options);
     },
     start(): void {
       started = true;
-      resolveAll();
+      pending = null;
     },
-    update(_frame: XRFrame, _dt: number): void {},
+    update(_frame: XRFrame, dt: number): void {
+      retry(dt);
+    },
     stop(): void {
       started = false;
-      resolved = [];
+      pending = null;
     },
     dispose(): void {
       started = false;
-      resolved = [];
+      pending = null;
       raw = [];
     },
   };
