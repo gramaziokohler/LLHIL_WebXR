@@ -157,11 +157,27 @@ function drawPanel(g: Canvas2D, rows: readonly Row[], style: PanelStyle): void {
     const y = pad + (i + 0.5) * rowHeight;
     g.textAlign = "left";
     g.fillStyle = style.textMuted;
-    g.fillText(fitText(g, label, size, weight, labelWidth - 12, style.fontFamily), pad, y);
+    g.fillText(
+      fitText(
+        g,
+        label,
+        size,
+        (px) => `${weight} ${Math.round(px)}px ${style.fontFamily}`,
+        labelWidth - 12,
+      ),
+      pad,
+      y,
+    );
     g.textAlign = "right";
     g.fillStyle = style.text;
     g.fillText(
-      fitText(g, value, size, weight, W - 2 * pad - labelWidth, style.fontFamily),
+      fitText(
+        g,
+        value,
+        size,
+        (px) => `${weight} ${Math.round(px)}px ${style.fontFamily}`,
+        W - 2 * pad - labelWidth,
+      ),
       W - pad,
       y,
     );

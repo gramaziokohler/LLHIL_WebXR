@@ -153,7 +153,7 @@ export function createTeleport(ctx: KitContext): KitModule {
   const turnArmed = new Map<string, boolean>();
 
   const teleportOn = () => ctx.options.vr.teleport;
-  const live = () => running && ctx.mode === "vr";
+  const live = () => running && ctx.mode === "vr" && !ctx.uiCapture;
 
   function hideVisuals(): void {
     line.visible = false;

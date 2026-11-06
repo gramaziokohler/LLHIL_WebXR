@@ -8,6 +8,7 @@ import type {
   WebGLRenderer,
 } from "three";
 import type { Emitter } from "./events";
+import type { UiTheme } from "./theme";
 import type {
   AlignmentNudge,
   AlignmentState,
@@ -15,6 +16,9 @@ import type {
   AROptions,
   FrameStats,
   KitEvents,
+  MenuBuiltin,
+  MenuIconSlot,
+  MenuItem,
   PerformanceOptions,
   RaycastFn,
   RayKind,
@@ -40,12 +44,23 @@ export interface ResolvedOptions {
   /** The host's `floorsReady`, or null: without it a missed floor is never retried. */
   floorsReady: (() => boolean) | null;
   diagnostics: { enabled: boolean; extra: (() => Record<string, string | number>) | null };
+  ui: {
+    icons: Partial<Record<MenuIconSlot, CanvasImageSource>>;
+    menu: { builtins: MenuBuiltin[]; hostItemsFirst: boolean; title: string | null };
+  };
 }
 
 /** Events modules send each other; not part of the public API. */
 export interface InternalEvents {
   selectstart: { ray: RaySource };
   selectend: { ray: RaySource };
+  /**
+   * The top face button (B or Y) was pressed; the locomotion module emits it, and it is public
+   * in `KitEvents` there. Declared here too so the menu builds on its own.
+   */
+  "menu-button": { hand: "left" | "right" };
+  /** `kit.setTheme` changed `ctx.theme`; panels redraw. */
+  theme: { theme: Readonly<UiTheme> };
 }
 
 export type AllEvents = KitEvents & InternalEvents;
@@ -71,6 +86,13 @@ export interface KitContext {
   raycast: RaycastFn;
   /** Moves the user (T2). Always present; set before any module starts. */
   space: SpaceController;
+  /** Look of the in-headset panels; replaced (never mutated) by `kit.setTheme`. */
+  theme: Readonly<UiTheme>;
+  /**
+   * True while a kit UI (the VR menu) owns the rays: teleport and turning ignore the trigger
+   * and the stick.
+   */
+  uiCapture: boolean;
   /** In-headset text panel (src/hud.ts). */
   hud: HudController;
   /** Rays from controllers, hands, transient pointers and screen taps (T3). */
@@ -232,6 +254,14 @@ export interface HudController extends KitModule {
   /** Shows a title and up to three detail lines; replaces what was shown. */
   show(title: string, lines?: readonly string[]): void;
   hide(): void;
+}
+
+/** The VR menu (src/menu.ts). */
+export interface MenuController extends KitModule {
+  open(): void;
+  close(): void;
+  readonly isOpen: boolean;
+  setItems(items: MenuItem[]): void;
 }
 
 /** Factory signature every module file exports. */
