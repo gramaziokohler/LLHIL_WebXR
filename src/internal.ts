@@ -20,6 +20,8 @@ import type {
   MenuIconSlot,
   MenuItem,
   LocomotionOptions,
+  PanelRow,
+  PanelSpec,
   PerformanceOptions,
   RaycastFn,
   RayKind,
@@ -96,7 +98,7 @@ export interface KitContext {
   mode: XRMode | null;
   session: XRSession | null;
   /**
-   * True while an in-headset UI (the VR menu) owns the controllers: thumbstick locomotion,
+   * True while an in-headset UI (the VR menu or the side panels) owns the controllers: thumbstick locomotion,
    * turning and teleport all stand still, until the trigger that picked a menu row is released.
    * Default false.
    */
@@ -271,6 +273,21 @@ export interface MenuController extends KitModule {
   close(): void;
   readonly isOpen: boolean;
   setItems(items: MenuItem[]): void;
+  /** The menu holds `uiCapture`: open, or the trigger that picked a row not yet released. */
+  readonly capturing: boolean;
+}
+
+/** The VR side panels (src/panels.ts). */
+export interface PanelsController extends KitModule {
+  set(panels: PanelSpec[]): void;
+  updateRow(panelId: string, rowId: string, patch: Partial<PanelRow>): void;
+  open(): void;
+  close(): void;
+  readonly isOpen: boolean;
+  /** Any panels are set: B and Y are theirs. */
+  readonly hasPanels: boolean;
+  /** The panels hold `uiCapture`: open, or the trigger that pressed on them not yet released. */
+  readonly capturing: boolean;
 }
 
 /** Factory signature every module file exports. */

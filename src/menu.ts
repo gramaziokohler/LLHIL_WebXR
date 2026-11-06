@@ -61,6 +61,10 @@ export interface MenuHost {
 export interface MenuDeps {
   viewpoints: () => readonly ResolvedViewpoint[];
   host: () => MenuHost | null;
+  /** True while B and Y belong to another UI (the side panels): the menu-button closes the menu. */
+  yieldButton?: () => boolean;
+  /** Another UI holds `uiCapture` too, so the menu does not release it. */
+  otherCapture?: () => boolean;
 }
 
 export type MenuRowKind = "section" | "viewpoint" | "locomotion" | "diagnostics" | "host" | "exit";
@@ -131,7 +135,7 @@ function stickY(gamepad: Gamepad | undefined): number {
 
 const selectable = (row: MenuRow | undefined) => row !== undefined && row.kind !== "section";
 
-function drawIcon(g: Canvas2D, icon: CanvasImageSource, x: number, y: number, size: number) {
+export function drawIcon(g: Canvas2D, icon: CanvasImageSource, x: number, y: number, size: number) {
   // An image that has not loaded (or failed) draws nothing rather than throwing.
   if ((icon as HTMLImageElement).complete === false) return;
   try {
@@ -445,7 +449,7 @@ export function createMenu(ctx: KitContext, deps: MenuDeps): MenuController {
   }
 
   function setCapture(): void {
-    ctx.uiCapture = open || releaseId !== null;
+    ctx.uiCapture = open || releaseId !== null || deps.otherCapture?.() === true;
   }
 
   function openMenu(): void {
@@ -630,6 +634,9 @@ export function createMenu(ctx: KitContext, deps: MenuDeps): MenuController {
     get isOpen() {
       return open;
     },
+    get capturing() {
+      return open || releaseId !== null;
+    },
     setItems(next: MenuItem[]): void {
       items = next.map((item) => ({ ...item }));
       if (!open) return;
@@ -641,7 +648,9 @@ export function createMenu(ctx: KitContext, deps: MenuDeps): MenuController {
       running = ctx.mode === "vr";
       if (!running) return;
       unsubscribe = [
-        ctx.events.on("menu-button", () => (open ? closeMenu() : openMenu())),
+        ctx.events.on("menu-button", () =>
+          open || deps.yieldButton?.() ? closeMenu() : openMenu(),
+        ),
         ctx.events.on("selectstart", onSelectStart),
         ctx.events.on("selectend", onSelectEnd),
       ];
