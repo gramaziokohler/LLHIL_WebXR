@@ -401,6 +401,9 @@ describe("createViewpoints: floor resolution", () => {
     const vps = createViewpoints(ctx);
     vps.set([{ id: "a", position: [1, 2, 3], yaw: 0 }]);
     vps.start();
+    // Floors are found when used, not when set or on start.
+    expect(raycast).not.toHaveBeenCalled();
+    vps.list();
     expect(raycast).toHaveBeenCalledTimes(1);
     const [origin, direction, far, targets] = raycast.mock.calls[0];
     expectVec(origin, 1, 2, 3.05);
@@ -515,5 +518,180 @@ describe("createViewpoints: goTo", () => {
     expect(() => vps.goTo("roof")).not.toThrow();
     expect(placeUser).not.toHaveBeenCalled();
     expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+const FRAME = {} as XRFrame;
+
+/** A space that records placements, counts generations and lets a test walk the head. */
+function fakeSpace(up: Vector3) {
+  const floor = new Vector3();
+  const walked = new Vector3();
+  const space = {
+    generation: 0,
+    placeUser: vi.fn((p: Vector3, _yaw?: number) => {
+      space.generation++;
+      floor.copy(p);
+      walked.set(0, 0, 0);
+    }),
+    head: () => ({
+      eye: floor.clone().add(walked).addScaledVector(up, 1.6),
+      floorPoint: floor.clone().add(walked),
+      yawDeg: 0,
+    }),
+    /** Steps in the room: the head moves, the placement does not. */
+    walk: (x: number, z: number) => walked.set(x, 0, z),
+  };
+  return space;
+}
+
+describe("createViewpoints: floors found on arrival", () => {
+  const vp: Viewpoint = { id: "a", label: "A", position: [2, 4.6, 0], yaw: 90 };
+  const object = new Group();
+
+  function setup(opts: { floorsReady?: () => boolean } = {}) {
+    let floorHeight: number | null = null;
+    const raycast = vi.fn<RaycastFn>((o) =>
+      floorHeight === null
+        ? null
+        : { point: new Vector3(o.x, floorHeight, o.z), normal: null, object, distance: 1 },
+    );
+    const { ctx, events } = makeCtx({ raycast });
+    const space = fakeSpace(ctx.up);
+    (ctx as { space: unknown }).space = space;
+    (ctx.options as { floorsReady: unknown }).floorsReady = opts.floorsReady ?? null;
+    const teleports: Vector3[] = [];
+    events.on("teleport", ({ position }) => teleports.push(position));
+    const vps = createViewpoints(ctx);
+    vps.set([vp]);
+    vps.start();
+    const setFloor = (h: number | null) => {
+      floorHeight = h;
+    };
+    const frames = (n: number, dt = 1 / 72) => {
+      for (let i = 0; i < n; i++) vps.update(FRAME, dt);
+    };
+    return { vps, space, raycast, setFloor, frames, teleports };
+  }
+
+  it("raycasts at goTo, so floors built after set are found", () => {
+    const { vps, space, raycast, setFloor } = setup();
+    expect(raycast).not.toHaveBeenCalled();
+    setFloor(3);
+    vps.goTo("a");
+    expect(raycast).toHaveBeenCalledTimes(1);
+    expectVec(space.placeUser.mock.calls[0][0], 2, 3, 0);
+    expect(space.placeUser.mock.calls[0][1]).toBe(90);
+  });
+
+  it("without floorsReady, falls back and never corrects", () => {
+    const { vps, space, setFloor, frames } = setup();
+    vps.goTo("a");
+    expectVec(space.placeUser.mock.calls[0][0], 2, 3.1, 0);
+    setFloor(3);
+    frames(10);
+    expect(space.placeUser).toHaveBeenCalledTimes(1);
+  });
+
+  it("moves the user onto the floor once it is found, keeping steps taken meanwhile", () => {
+    let ready = false;
+    const { vps, space, raycast, setFloor, frames, teleports } = setup({
+      floorsReady: () => ready,
+    });
+    vps.goTo("a");
+    expectVec(space.placeUser.mock.calls[0][0], 2, 3.1, 0);
+    frames(5);
+    expect(space.placeUser).toHaveBeenCalledTimes(1);
+    // Retried each frame while not ready.
+    expect(raycast).toHaveBeenCalledTimes(6);
+    space.walk(0.5, -0.25);
+    ready = true;
+    setFloor(3);
+    frames(1);
+    expect(space.placeUser).toHaveBeenCalledTimes(2);
+    const [point, yaw] = space.placeUser.mock.calls[1];
+    expectVec(point, 2.5, 3, -0.25);
+    // Facing kept.
+    expect(yaw).toBeUndefined();
+    expect(teleports).toHaveLength(1);
+    expectVec(teleports[0], 2.5, 3, -0.25);
+    frames(5);
+    expect(space.placeUser).toHaveBeenCalledTimes(2);
+  });
+
+  it("corrects even when the floor is found before floorsReady turns true", () => {
+    const { vps, space, setFloor, frames } = setup({ floorsReady: () => false });
+    vps.goTo("a");
+    frames(3);
+    setFloor(3);
+    frames(1);
+    expectVec(space.placeUser.mock.calls[1][0], 2, 3, 0);
+  });
+
+  it("gives up when the floors are ready and there is still none below", () => {
+    let ready = false;
+    const { vps, space, setFloor, frames } = setup({ floorsReady: () => ready });
+    vps.goTo("a");
+    ready = true;
+    frames(1);
+    setFloor(3);
+    frames(5);
+    expect(space.placeUser).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not correct after the user moved on (teleport, another viewpoint)", () => {
+    let ready = false;
+    const { vps, space, setFloor, frames } = setup({ floorsReady: () => ready });
+    vps.goTo("a");
+    frames(2);
+    // A teleport: any placement counts.
+    space.placeUser(new Vector3(7, 0, 7));
+    ready = true;
+    setFloor(3);
+    frames(3);
+    expect(space.placeUser).toHaveBeenCalledTimes(2);
+    expectVec(space.placeUser.mock.calls[1][0], 7, 0, 7);
+  });
+
+  it("stops looking after 10 s", () => {
+    const { vps, space, raycast, setFloor, frames } = setup({ floorsReady: () => false });
+    vps.goTo("a");
+    frames(9, 1);
+    frames(1, 1.5);
+    const casts = raycast.mock.calls.length;
+    setFloor(3);
+    frames(3);
+    expect(raycast).toHaveBeenCalledTimes(casts);
+    expect(space.placeUser).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops looking when the session stops", () => {
+    const { vps, space, setFloor, frames } = setup({ floorsReady: () => false });
+    vps.goTo("a");
+    vps.stop();
+    setFloor(3);
+    frames(2);
+    expect(space.placeUser).toHaveBeenCalledTimes(1);
+  });
+
+  it("placeBelow: the start placement accepts any surface, as far down as asked", () => {
+    const steep: RaycastFn = vi.fn((o: Vector3) => ({
+      point: new Vector3(o.x, 0.5, o.z),
+      normal: new Vector3(1, 1, 0).normalize(),
+      object,
+      distance: 1,
+    }));
+    const { ctx } = makeCtx({ raycast: steep });
+    const space = fakeSpace(ctx.up);
+    (ctx as { space: unknown }).space = space;
+    const vps = createViewpoints(ctx);
+    vps.start();
+    vps.placeBelow(new Vector3(1, 50, 2), 45, { far: 1e5, anySurface: true });
+    expect((steep as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe(1e5);
+    expectVec(space.placeUser.mock.calls[0][0], 1, 0.5, 2);
+    expect(space.placeUser.mock.calls[0][1]).toBe(45);
+    vps.placeBelow(new Vector3(1, 50, 2), 45);
+    // A steep hit is no floor by default: eye minus eye height (1.5).
+    expectVec(space.placeUser.mock.calls[1][0], 1, 48.5, 2);
   });
 });

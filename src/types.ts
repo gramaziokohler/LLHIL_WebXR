@@ -98,6 +98,27 @@ export interface PerformanceOptions {
   framebufferScale?: number;
   /** Fixed foveation, 0 (off) to 1 (maximum). Default 1. */
   foveation?: number;
+  /**
+   * Display refresh rate to ask for, Hz. Applied after the session starts where the browser
+   * offers it (`supportedFrameRates`), else the nearest lower rate it offers. Default 72.
+   */
+  targetFrameRate?: number;
+}
+
+export interface DiagnosticsOptions {
+  /** Show the diagnostics panel from the start. Default false. */
+  enabled?: boolean;
+  /** Extra lines for the panel, label to value. Called at most 4 times a second while it shows. */
+  extra?: () => Record<string, string | number>;
+}
+
+/** Frame timing over the last second. */
+export interface FrameStats {
+  fps: number;
+  /** Mean frame interval, milliseconds. */
+  frameMs: number;
+  /** Frames whose interval was over 1.5 times the target frame interval. */
+  missed: number;
 }
 
 /** A ray hit against the scene. */
@@ -146,6 +167,14 @@ export interface XRKitOptions {
   hands?: boolean;
   /** Replace the default raycast, for example with the host's BVH. */
   raycast?: RaycastFn;
+  /**
+   * Whether `raycast` can find the floors yet, for hosts that build them after the session
+   * starts. While it returns false, a user placed at the fallback height (no floor found) is
+   * moved onto the floor once it is found, for up to 10 s, unless they moved meanwhile.
+   */
+  floorsReady?: () => boolean;
+  /** An in-headset panel with frame timing. Off by default. */
+  diagnostics?: DiagnosticsOptions;
 }
 
 export interface XRSupport {
@@ -212,6 +241,12 @@ export interface XRKit {
   update(frame?: XRFrame): void;
   /** The active mode, or null on the desktop. */
   readonly presenting: XRMode | null;
+  /** Show or hide the diagnostics panel (shown only while presenting). */
+  setDiagnostics(on: boolean): void;
+  /** Whether the diagnostics panel is on. */
+  readonly diagnostics: boolean;
+  /** Frame timing over the last second, or null outside a session. */
+  readonly frameStats: FrameStats | null;
   /** Subscribe to an event; returns the unsubscribe function. */
   on<K extends keyof KitEvents>(event: K, listener: (payload: KitEvents[K]) => void): () => void;
   /** End any session and remove everything the kit added. */

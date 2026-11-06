@@ -15,7 +15,9 @@ describe("resolveOptions", () => {
     expect(o.vr).toEqual({ turn: "snap", snapDegrees: 30, eyeHeight: 1.6, teleport: true });
     expect(o.ar.scales).toEqual([1, 1 / 50, 1 / 100, 1 / 200]);
     expect(o.ar.defaultScale).toBe(1 / 100);
-    expect(o.performance).toEqual({ framebufferScale: 1, foveation: 1 });
+    expect(o.performance).toEqual({ framebufferScale: 1, foveation: 1, targetFrameRate: 72 });
+    expect(o.floorsReady).toBeNull();
+    expect(o.diagnostics).toEqual({ enabled: false, extra: null });
   });
 });
 
@@ -28,6 +30,20 @@ describe("createXRKit", () => {
     });
     expect(kit.presenting).toBeNull();
     expect(() => kit.update()).not.toThrow();
+    kit.dispose();
+  });
+
+  it("keeps the diagnostics switch, and has no frame stats outside a session", () => {
+    const kit = createXRKit({
+      renderer: fakeRenderer(),
+      scene: new Scene(),
+      camera: new PerspectiveCamera(),
+      diagnostics: { enabled: true },
+    });
+    expect(kit.diagnostics).toBe(true);
+    kit.setDiagnostics(false);
+    expect(kit.diagnostics).toBe(false);
+    expect(kit.frameStats).toBeNull();
     kit.dispose();
   });
 });

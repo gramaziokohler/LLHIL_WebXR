@@ -1,10 +1,12 @@
 import { Group, type Object3D, Quaternion, Vector3 } from "three";
 import { createAR } from "./ar";
+import { createDiagnostics } from "./diagnostics";
 import { Emitter } from "./events";
 import { createInput } from "./input";
 import type {
   AllEvents,
   ARController,
+  DiagnosticsController,
   KitContext,
   KitModule,
   ResolvedOptions,
@@ -56,9 +58,15 @@ export function resolveOptions(options: XRKitOptions): ResolvedOptions {
     performance: {
       framebufferScale: options.performance?.framebufferScale ?? 1,
       foveation: options.performance?.foveation ?? 1,
+      targetFrameRate: options.performance?.targetFrameRate ?? 72,
     },
     controllerModels: options.controllerModels ?? true,
     hands: options.hands ?? true,
+    floorsReady: options.floorsReady ?? null,
+    diagnostics: {
+      enabled: options.diagnostics?.enabled ?? false,
+      extra: options.diagnostics?.extra ?? null,
+    },
   };
 }
 
@@ -93,12 +101,13 @@ export function createXRKit(options: XRKitOptions): XRKit {
   const teleport = createTeleport(ctx);
   const viewpoints: ViewpointsController = createViewpoints(ctx);
   const ar: ARController = createAR(ctx);
+  const diagnostics: DiagnosticsController = createDiagnostics(ctx);
   viewpoints.set(resolved.viewpoints);
 
   const modulesFor = (mode: XRMode): KitModule[] =>
     mode === "vr"
-      ? [ctx.space, ctx.input, teleport, viewpoints, ctx.hud]
-      : [ctx.space, ctx.input, ar, ctx.hud];
+      ? [ctx.space, ctx.input, teleport, viewpoints, ctx.hud, diagnostics]
+      : [ctx.space, ctx.input, ar, ctx.hud, diagnostics];
 
   let active: KitModule[] = [];
   let pendingViewpoint: string | undefined;
@@ -161,14 +170,12 @@ export function createXRKit(options: XRKitOptions): XRKit {
     const s = resolved.metresPerUnit;
     const eye = new Vector3();
     ctx.camera.getWorldPosition(eye).multiplyScalar(s);
-    const down = ctx.up.clone().negate();
-    const hit = ctx.raycast(eye, down, 1e5, "floors");
-    const floor = hit ? hit.point : eye.clone().addScaledVector(ctx.up, -resolved.vr.eyeHeight);
     // A camera looks along its local -Z, whatever its up vector.
     const dir = new Vector3(0, 0, -1).applyQuaternion(
       ctx.camera.getWorldQuaternion(new Quaternion()),
     );
-    ctx.space.placeUser(floor, yawFromDirection(dir, resolved.up));
+    // Whatever is below the camera, however far: a desktop view can be high above the model.
+    viewpoints.placeBelow(eye, yawFromDirection(dir, resolved.up), { far: 1e5, anySurface: true });
   }
 
   const kit: XRKit = {
@@ -234,13 +241,24 @@ export function createXRKit(options: XRKitOptions): XRKit {
     get presenting() {
       return ctx.mode;
     },
+    setDiagnostics(on: boolean): void {
+      diagnostics.setEnabled(on);
+    },
+    get diagnostics() {
+      return diagnostics.enabled;
+    },
+    get frameStats() {
+      return diagnostics.stats;
+    },
     on<K extends keyof KitEvents>(event: K, listener: (payload: KitEvents[K]) => void) {
       return ctx.events.on(event, listener as (payload: AllEvents[K]) => void);
     },
     dispose(): void {
       // Ending the session first runs every module's stop() before its dispose().
       session.dispose();
-      for (const m of [teleport, viewpoints, ar, ctx.hud, ctx.input, ctx.space]) m.dispose();
+      for (const m of [teleport, viewpoints, ar, diagnostics, ctx.hud, ctx.input, ctx.space]) {
+        m.dispose();
+      }
       root.removeFromParent();
       ctx.events.clear();
     },

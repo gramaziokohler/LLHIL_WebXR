@@ -48,6 +48,50 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** The target rate when the browser offers it, else the nearest lower one it offers, else null. */
+export function pickFrameRate(
+  supported: ArrayLike<number> | null | undefined,
+  target: number,
+): number | null {
+  if (!supported || !(target > 0)) return null;
+  let best: number | null = null;
+  for (let i = 0; i < supported.length; i++) {
+    const rate = supported[i];
+    if (rate === target) return rate;
+    if (rate < target && (best === null || rate > best)) best = rate;
+  }
+  return best;
+}
+
+/** Frame-rate members of XRSession, missing from older browsers and type definitions. */
+type FrameRateSession = XRSession & {
+  supportedFrameRates?: Float32Array | readonly number[] | null;
+  frameRate?: number;
+  updateTargetFrameRate?: (rate: number) => Promise<void>;
+};
+
+/**
+ * Asks the session for `target` Hz (or the nearest lower rate it offers). Resolves with the rate
+ * asked for, or null when the browser offers no choice or refused; `warn` runs on a refusal.
+ */
+export async function applyTargetFrameRate(
+  session: XRSession,
+  target: number,
+  warn: (message: string) => void,
+): Promise<number | null> {
+  const s = session as FrameRateSession;
+  if (typeof s.updateTargetFrameRate !== "function") return null;
+  const rate = pickFrameRate(s.supportedFrameRates, target);
+  if (rate === null) return null;
+  try {
+    await s.updateTargetFrameRate(rate);
+    return rate;
+  } catch (error) {
+    warn(`[llhil-webxr] could not set the frame rate to ${rate} Hz: ${errorMessage(error)}`);
+    return null;
+  }
+}
+
 /**
  * Starts and ends WebXR sessions on the host's renderer, and puts the desktop camera back
  * where it was when a session ends.
@@ -56,6 +100,12 @@ export function createSessionController(ctx: KitContext, hooks: SessionHooks): S
   const { renderer, camera } = ctx;
   let active: Active | null = null;
   let entering = false;
+  let warnedFrameRate = false;
+  const warnFrameRateOnce = (message: string) => {
+    if (warnedFrameRate) return;
+    warnedFrameRate = true;
+    console.warn(message);
+  };
 
   function saveCamera(): CameraState {
     return {
@@ -193,6 +243,12 @@ export function createSessionController(ctx: KitContext, hooks: SessionHooks): S
       await setting;
       if (state.ended) throw new Error("the session ended while starting");
       renderer.xr.setFoveation(ctx.options.performance.foveation);
+      // Not awaited: the session runs at its default rate until the browser switches.
+      void applyTargetFrameRate(
+        session,
+        ctx.options.performance.targetFrameRate,
+        warnFrameRateOnce,
+      );
       const base = renderer.xr.getReferenceSpace();
       if (!base) throw new Error("no reference space");
       state.started = true;

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Emitter } from "../../src/events";
 import type { KitContext, SessionHooks } from "../../src/internal";
 import { resolveOptions } from "../../src/index";
-import { createSessionController } from "../../src/session";
+import { applyTargetFrameRate, createSessionController, pickFrameRate } from "../../src/session";
 
 /** The browser's session: an EventTarget whose end() fires 'end' once. */
 class FakeSession extends EventTarget {
@@ -375,5 +375,84 @@ describe("session end", () => {
     await expect(c.enter("vr")).rejects.toThrow(/module failed/);
     expect(session.ended).toBe(true);
     expect(hooks.onEnd).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("target frame rate", () => {
+  it("picks the target, else the nearest lower rate offered", () => {
+    expect(pickFrameRate(new Float32Array([72, 90, 120]), 72)).toBe(72);
+    expect(pickFrameRate([60, 80, 90], 72)).toBe(60);
+    expect(pickFrameRate([90, 120], 72)).toBeNull();
+    expect(pickFrameRate([], 72)).toBeNull();
+    expect(pickFrameRate(undefined, 72)).toBeNull();
+    expect(pickFrameRate([72], 0)).toBeNull();
+  });
+
+  /** A session offering `rates`, whose updateTargetFrameRate resolves or rejects. */
+  function rateSession(rates: number[] | undefined, reject?: Error) {
+    const updateTargetFrameRate = vi.fn(async (_rate: number) => {
+      if (reject) throw reject;
+    });
+    const session = {
+      supportedFrameRates: rates && new Float32Array(rates),
+      updateTargetFrameRate,
+    };
+    return { session: session as unknown as XRSession, updateTargetFrameRate };
+  }
+
+  it("asks for the target rate when it is offered", async () => {
+    const { session, updateTargetFrameRate } = rateSession([72, 80, 90, 120]);
+    const warn = vi.fn();
+    await expect(applyTargetFrameRate(session, 72, warn)).resolves.toBe(72);
+    expect(updateTargetFrameRate).toHaveBeenCalledWith(72);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("asks for the nearest lower rate, and nothing when none is lower or none is listed", async () => {
+    const a = rateSession([60, 90]);
+    await expect(applyTargetFrameRate(a.session, 72, vi.fn())).resolves.toBe(60);
+    expect(a.updateTargetFrameRate).toHaveBeenCalledWith(60);
+    const b = rateSession([90, 120]);
+    await expect(applyTargetFrameRate(b.session, 72, vi.fn())).resolves.toBeNull();
+    const c = rateSession(undefined);
+    await expect(applyTargetFrameRate(c.session, 72, vi.fn())).resolves.toBeNull();
+    expect(b.updateTargetFrameRate).not.toHaveBeenCalled();
+    expect(c.updateTargetFrameRate).not.toHaveBeenCalled();
+  });
+
+  it("does nothing where the method is missing", async () => {
+    const session = { supportedFrameRates: new Float32Array([72]) } as unknown as XRSession;
+    const warn = vi.fn();
+    await expect(applyTargetFrameRate(session, 72, warn)).resolves.toBeNull();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("catches a refusal and warns", async () => {
+    const { session } = rateSession([72], new Error("NotSupportedError"));
+    const warn = vi.fn();
+    await expect(applyTargetFrameRate(session, 72, warn)).resolves.toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/72 Hz.*NotSupportedError/));
+  });
+
+  it("enter() applies performance.targetFrameRate after setSession, warning once per kit", async () => {
+    const { ctx, hooks, session, calls } = setup();
+    ctx.options.performance.targetFrameRate = 90;
+    const s = session as unknown as Record<string, unknown>;
+    s.supportedFrameRates = new Float32Array([72, 90]);
+    s.updateTargetFrameRate = vi.fn(async (rate: number) => {
+      calls.push(`frameRate:${rate}`);
+      throw new Error("busy");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const c = createSessionController(ctx, hooks);
+    await c.enter("vr");
+    expect(calls.indexOf("frameRate:90")).toBeGreaterThan(calls.indexOf("setSession"));
+    await c.exit();
+    session.ended = false;
+    await c.enter("vr");
+    await vi.waitFor(() => expect(s.updateTargetFrameRate).toHaveBeenCalledTimes(2));
+    await Promise.resolve();
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 });
