@@ -108,6 +108,16 @@ let demoAlignment: ARAlignment | null = null;
 let fileAR: ViewpointsFileAR | null = null;
 let arSupported = false;
 
+/** Whether the floor markers under the viewpoints (`marker-*`) are shown. */
+let marksVisible = true;
+
+function setMarksVisible(visible: boolean): void {
+  marksVisible = visible;
+  content?.model.traverse((o) => {
+    if (o.name.startsWith("marker-")) o.visible = visible;
+  });
+}
+
 /** The kit takes its model, floors and units at creation, so a new model means a new kit. */
 function rebuildKit(): void {
   if (!content) return;
@@ -132,6 +142,11 @@ function rebuildKit(): void {
     renderOnsite();
   });
   kit.on("alignment", onAlignment);
+  // The VR menu: one host item, a toggle for the floor markers under the viewpoints.
+  kit.setMenuItems([{ id: "marks", label: "Show marks", kind: "toggle", value: marksVisible }]);
+  kit.on("menu-select", ({ id, value }) => {
+    if (id === "marks") setMarksVisible(value === true);
+  });
   buttons = createXRButtons(kit, ui.xr);
   ui.alignmentState.textContent = "";
   arSupported = false;
@@ -157,6 +172,7 @@ function setContent(next: Content): void {
   scene.add(next.model);
   if (next.extra) scene.add(next.extra);
   next.model.updateMatrixWorld(true);
+  setMarksVisible(marksVisible);
   fitCamera(new Box3().setFromObject(next.model));
   rebuildKit();
   renderViewpoints();
