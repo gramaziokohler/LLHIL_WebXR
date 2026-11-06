@@ -23,6 +23,7 @@ import {
   createXRKit,
   directionFromYaw,
   type KitEvents,
+  type LocomotionMode,
   parseViewpointsFile,
   parseViewpointsFileAR,
   type ViewpointsFileAR,
@@ -37,6 +38,9 @@ import { createDemoScene, createLights, DEMO } from "./demo-scene";
 const params = new URLSearchParams(location.search);
 const up: UpAxis = params.get("up") === "z" ? "z" : "y";
 const upVector = up === "z" ? new Vector3(0, 0, 1) : new Vector3(0, 1, 0);
+// VR thumbstick locomotion: walk by default, ?loco=fly or ?loco=teleport otherwise.
+const locoParam = params.get("loco");
+const loco: LocomotionMode = locoParam === "fly" || locoParam === "teleport" ? locoParam : "walk";
 const DEFAULT_FOV = 50;
 
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -123,6 +127,7 @@ function rebuildKit(): void {
     metresPerUnit,
     floors: content.floors,
     viewpoints,
+    vr: { locomotion: { mode: loco } },
   });
   kit.on("sessionend", onResize);
   kit.on("sessionstart", renderOnsite);
