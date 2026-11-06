@@ -2,6 +2,7 @@ import { Group, type Object3D, Quaternion, Vector3 } from "three";
 import { createAR } from "./ar";
 import { Emitter } from "./events";
 import { createInput } from "./input";
+import { createLocomotion, defaultLocomotion, patchLocomotion } from "./locomotion";
 import type {
   AllEvents,
   ARController,
@@ -21,6 +22,7 @@ import type {
   EnterAROptions,
   EnterVROptions,
   KitEvents,
+  LocomotionOptions,
   XRKit,
   XRKitOptions,
   XRMode,
@@ -35,6 +37,9 @@ export { directionFromYaw, forwardAtYawZero, yawFromDirection } from "./math";
 
 /** Applies every default. Exported for tests. */
 export function resolveOptions(options: XRKitOptions): ResolvedOptions {
+  const snapDegrees = options.vr?.snapDegrees ?? 30;
+  const locomotion = defaultLocomotion(snapDegrees);
+  patchLocomotion(locomotion, options.vr?.locomotion);
   return {
     model: options.model ?? options.scene,
     metresPerUnit: options.metresPerUnit ?? 1,
@@ -43,9 +48,10 @@ export function resolveOptions(options: XRKitOptions): ResolvedOptions {
     viewpoints: options.viewpoints ?? [],
     vr: {
       turn: options.vr?.turn ?? "snap",
-      snapDegrees: options.vr?.snapDegrees ?? 30,
+      snapDegrees,
       eyeHeight: options.vr?.eyeHeight ?? 1.6,
       teleport: options.vr?.teleport ?? true,
+      locomotion,
     },
     ar: {
       scales: options.ar?.scales ?? [1, 1 / 50, 1 / 100, 1 / 200],
@@ -85,11 +91,13 @@ export function createXRKit(options: XRKitOptions): XRKit {
     raycast: options.raycast ?? createDefaultRaycast(floors, () => resolved.model, root),
     mode: null,
     session: null,
+    uiCapture: false,
   } as unknown as KitContext;
 
   ctx.space = createSpace(ctx);
   ctx.hud = createHud(ctx);
   ctx.input = createInput(ctx);
+  const locomotion = createLocomotion(ctx);
   const teleport = createTeleport(ctx);
   const viewpoints: ViewpointsController = createViewpoints(ctx);
   const ar: ARController = createAR(ctx);
@@ -97,7 +105,7 @@ export function createXRKit(options: XRKitOptions): XRKit {
 
   const modulesFor = (mode: XRMode): KitModule[] =>
     mode === "vr"
-      ? [ctx.space, ctx.input, teleport, viewpoints, ctx.hud]
+      ? [ctx.space, ctx.input, locomotion, teleport, viewpoints, ctx.hud]
       : [ctx.space, ctx.input, ar, ctx.hud];
 
   let active: KitModule[] = [];
@@ -214,6 +222,14 @@ export function createXRKit(options: XRKitOptions): XRKit {
     get alignmentState() {
       return ctx.mode === "ar" ? ar.alignmentState : null;
     },
+    setLocomotion(patch: Partial<LocomotionOptions>): void {
+      if (patchLocomotion(resolved.vr.locomotion, patch)) {
+        ctx.events.emit("locomotion", { mode: resolved.vr.locomotion.mode });
+      }
+    },
+    get locomotion(): Readonly<LocomotionOptions> {
+      return resolved.vr.locomotion;
+    },
     update(frame?: XRFrame): void {
       if (!ctx.mode || !frame) return;
       const now = performance.now();
@@ -240,7 +256,9 @@ export function createXRKit(options: XRKitOptions): XRKit {
     dispose(): void {
       // Ending the session first runs every module's stop() before its dispose().
       session.dispose();
-      for (const m of [teleport, viewpoints, ar, ctx.hud, ctx.input, ctx.space]) m.dispose();
+      for (const m of [locomotion, teleport, viewpoints, ar, ctx.hud, ctx.input, ctx.space]) {
+        m.dispose();
+      }
       root.removeFromParent();
       ctx.events.clear();
     },
