@@ -34,11 +34,14 @@ import {
   type XRKit,
 } from "../../src/index";
 import { createDemoScene, createLights, DEMO } from "./demo-scene";
+import { setViewerPanels } from "./vr-panels";
 
 const params = new URLSearchParams(location.search);
 const up: UpAxis = params.get("up") === "z" ? "z" : "y";
 /** ?diag=1: the in-headset diagnostics panel from the start. */
 const diag = params.get("diag") === "1";
+/** ?panels=1: VR side panels (settings left, viewpoints right) instead of the centre menu. */
+const panels = params.get("panels") === "1";
 const upVector = up === "z" ? new Vector3(0, 0, 1) : new Vector3(0, 1, 0);
 // VR thumbstick locomotion: walk by default, ?loco=fly or ?loco=teleport otherwise.
 const locoParam = params.get("loco");
@@ -114,6 +117,24 @@ let demoAlignment: ARAlignment | null = null;
 let fileAR: ViewpointsFileAR | null = null;
 let arSupported = false;
 
+/** The Scale slider of the VR panels: a factor on the model's own scale, 1 when untouched. */
+let modelScale = 1;
+
+let unwirePanels = (): void => {};
+
+/** Sets the VR panels on the kit for the current viewpoints, replacing the earlier wiring. */
+function wirePanels(): void {
+  unwirePanels();
+  if (kit && panels) unwirePanels = setViewerPanels(kit, viewpoints, { scale: setModelScale });
+}
+
+function setModelScale(value: number): void {
+  if (!content) return;
+  content.model.scale.multiplyScalar(value / modelScale);
+  content.model.updateMatrixWorld(true);
+  modelScale = value;
+}
+
 /** Whether the floor markers under the viewpoints (`marker-*`) are shown. */
 let marksVisible = true;
 
@@ -155,6 +176,16 @@ function rebuildKit(): void {
   kit.on("menu-select", ({ id, value }) => {
     if (id === "marks") setMarksVisible(value === true);
   });
+  if (panels) {
+    wirePanels();
+    kit.on("sessionend", () => {
+      // Outside the headset the model is back at its own scale; the kit restored it already
+      // when it scaled the model for the session (metresPerUnit), else undo the slider here.
+      if (metresPerUnit === 1) setModelScale(1);
+      modelScale = 1;
+      kit?.updatePanelRow("left", "scale", { value: 1 });
+    });
+  }
   buttons = createXRButtons(kit, ui.xr);
   ui.alignmentState.textContent = "";
   arSupported = false;
@@ -177,6 +208,7 @@ function setContent(next: Content): void {
     disposeObject(content.model);
   }
   content = next;
+  modelScale = 1;
   scene.add(next.model);
   if (next.extra) scene.add(next.extra);
   next.model.updateMatrixWorld(true);
@@ -473,6 +505,7 @@ function applyViewpoints(json: unknown, source: string): ViewpointsFile | null {
     rebuildKit();
   } else {
     kit?.setViewpoints(viewpoints);
+    wirePanels();
   }
   renderViewpoints();
   renderOnsite();
