@@ -13,6 +13,7 @@ import type {
   AlignmentState,
   ARAlignment,
   AROptions,
+  FrameStats,
   KitEvents,
   PerformanceOptions,
   RaycastFn,
@@ -36,6 +37,9 @@ export interface ResolvedOptions {
   performance: Required<PerformanceOptions>;
   controllerModels: boolean;
   hands: boolean;
+  /** The host's `floorsReady`, or null: without it a missed floor is never retried. */
+  floorsReady: (() => boolean) | null;
+  diagnostics: { enabled: boolean; extra: (() => Record<string, string | number>) | null };
 }
 
 /** Events modules send each other; not part of the public API. */
@@ -102,6 +106,12 @@ export interface SpaceController extends KitModule {
   placeUser(floorPoint: Vector3, yawDeg?: number): void;
   /** Turns the user by `deltaDeg` around the head (positive turns left). */
   snapTurn(deltaDeg: number): void;
+  /**
+   * Counts the moves to a new place: every `placeUser` adds one (turning in place does not). A
+   * pending floor correction applies only while it is unchanged. Any new way of moving the user
+   * must add one too.
+   */
+  readonly generation: number;
   /** The head now: eye and the floor point below it in scene coordinates, and its yaw. */
   head(): { eye: Vector3; floorPoint: Vector3; yawDeg: number };
 }
@@ -150,8 +160,30 @@ export interface ResolvedViewpoint {
 export interface ViewpointsController extends KitModule {
   set(viewpoints: Viewpoint[]): void;
   list(): readonly ResolvedViewpoint[];
-  /** Teleports to the viewpoint; throws on an unknown id. */
+  /** Teleports to the viewpoint, finding its floor now; throws on an unknown id. */
   goTo(id: string): void;
+  /**
+   * Places the user on the floor below `eye` (scene coordinates, metres), facing `yawDeg`. With
+   * no floor found, at `eye` minus the eye height; while `floorsReady()` is false the floor is
+   * looked for again each frame (see `XRKitOptions.floorsReady`).
+   */
+  placeBelow(eye: Vector3, yawDeg: number, options?: FloorSearch): void;
+}
+
+/** How `placeBelow` looks for the floor. */
+export interface FloorSearch {
+  /** Metres searched below the eye. Default 100. */
+  far?: number;
+  /** Accept any first hit, not only one within 30 degrees of horizontal. Default false. */
+  anySurface?: boolean;
+}
+
+/** The diagnostics panel and the frame timing behind it (src/diagnostics.ts). */
+export interface DiagnosticsController extends KitModule {
+  setEnabled(on: boolean): void;
+  readonly enabled: boolean;
+  /** Over the last second, or null outside a session and before the first frame interval. */
+  readonly stats: FrameStats | null;
 }
 
 export interface ARController extends KitModule {

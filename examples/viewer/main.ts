@@ -36,6 +36,8 @@ import { createDemoScene, createLights, DEMO } from "./demo-scene";
 
 const params = new URLSearchParams(location.search);
 const up: UpAxis = params.get("up") === "z" ? "z" : "y";
+/** ?diag=1: the in-headset diagnostics panel from the start. */
+const diag = params.get("diag") === "1";
 const upVector = up === "z" ? new Vector3(0, 0, 1) : new Vector3(0, 1, 0);
 const DEFAULT_FOV = 50;
 
@@ -123,6 +125,7 @@ function rebuildKit(): void {
     metresPerUnit,
     floors: content.floors,
     viewpoints,
+    diagnostics: { enabled: diag },
   });
   kit.on("sessionend", onResize);
   kit.on("sessionstart", renderOnsite);

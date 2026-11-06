@@ -39,6 +39,9 @@ export interface HarnessAlignmentEvent {
 
 const params = new URLSearchParams(location.search);
 const mode = params.get("mode") === "ar" ? "ar" : "vr";
+// Floors built after the session starts (?floors=late), as hosts with a late collision model do:
+// the floor list stays empty until window.__buildFloors() runs.
+const lateFloors = params.get("floors") === "late";
 
 // 1:1 on site (?mode=ar&alignment=1): two marks on the ground plane, 1.2 m apart, ahead of the
 // user on free floor of the synthetic living room (its front wall stands about 2.45 m ahead).
@@ -93,6 +96,8 @@ mezzanine.position.set(0, 1.5, -6);
 scene.add(mezzanine);
 scene.updateMatrixWorld(true);
 
+const floors: Mesh[] = [];
+
 const viewpoints: Viewpoint[] = [
   { id: "entrance", label: "Entrance", position: [0, 1.6, 5], yaw: 0 },
   { id: "mezzanine", label: "Mezzanine", position: [0, 4.6, -6], yaw: 180 },
@@ -115,6 +120,15 @@ const kit = createXRKit({
   // Controller and hand models come from a CDN; the harness stays offline.
   controllerModels: false,
   hands: false,
+  ...(lateFloors
+    ? {
+        // The kit reads the array on every raycast, so floors pushed later are found.
+        floors,
+        floorsReady: () => floors.length > 0,
+        // Far from the real eye height, so the fallback and the floor differ.
+        vr: { eyeHeight: 1 },
+      }
+    : {}),
 });
 createXRButtons(kit, document.body);
 
@@ -176,6 +190,8 @@ declare global {
     /** The on-site alignment the harness enters with (?mode=ar&alignment=1), else null. */
     __alignment: ARAlignment | null;
     __alignmentEvents: HarnessAlignmentEvent[];
+    /** ?floors=late: adds the floors the kit raycasts against. */
+    __buildFloors: () => void;
     /** Resolves once the harness (and, in AR, the synthetic room) is ready. */
     __ready: Promise<void>;
   }
@@ -190,6 +206,9 @@ window.__camera = camera;
 window.__mode = mode;
 window.__alignment = alignment;
 window.__alignmentEvents = alignmentEvents;
+window.__buildFloors = () => {
+  if (floors.length === 0) floors.push(ground, mezzanine);
+};
 window.__ready = environmentReady.then(() => {
   document.body.dataset.ready = "true";
 });
