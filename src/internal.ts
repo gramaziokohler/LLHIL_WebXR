@@ -19,6 +19,7 @@ import type {
   MenuBuiltin,
   MenuIconSlot,
   MenuItem,
+  LocomotionOptions,
   PerformanceOptions,
   RaycastFn,
   RayKind,
@@ -36,7 +37,7 @@ export interface ResolvedOptions {
   up: UpAxis;
   floors: "auto" | Object3D[];
   viewpoints: Viewpoint[];
-  vr: Required<VROptions>;
+  vr: Required<Omit<VROptions, "locomotion">> & { locomotion: LocomotionOptions };
   ar: Required<AROptions>;
   performance: Required<PerformanceOptions>;
   controllerModels: boolean;
@@ -88,17 +89,18 @@ export interface KitContext {
   space: SpaceController;
   /** Look of the in-headset panels; replaced (never mutated) by `kit.setTheme`. */
   theme: Readonly<UiTheme>;
-  /**
-   * True while a kit UI (the VR menu) owns the rays: teleport and turning ignore the trigger
-   * and the stick.
-   */
-  uiCapture: boolean;
   /** In-headset text panel (src/hud.ts). */
   hud: HudController;
   /** Rays from controllers, hands, transient pointers and screen taps (T3). */
   input: InputController;
   mode: XRMode | null;
   session: XRSession | null;
+  /**
+   * True while an in-headset UI (the VR menu) owns the controllers: thumbstick locomotion,
+   * turning and teleport all stand still, until the trigger that picked a menu row is released.
+   * Default false.
+   */
+  uiCapture: boolean;
 }
 
 /**
@@ -122,18 +124,25 @@ export interface SpaceController extends KitModule {
   /** Called once per session with the base reference space, before any module starts. */
   reset(base: XRReferenceSpace): void;
   /**
+   * Counts the moves of the user: incremented by every `placeUser` and `moveBy` (walking and
+   * flying; turning in place does not count). A deferred correction (the late floor) made for an
+   * older value is stale and must be skipped.
+   */
+  readonly generation: number;
+  /**
    * Moves the user so the floor point below the head lands on `floorPoint` (scene coordinates),
    * facing `yawDeg` (spec convention, see `Viewpoint.yaw`). Without `yawDeg` the facing is kept.
    */
   placeUser(floorPoint: Vector3, yawDeg?: number): void;
   /** Turns the user by `deltaDeg` around the head (positive turns left). */
   snapTurn(deltaDeg: number): void;
+  /** Moves the user by `delta` (scene coordinates), turning nothing. */
+  moveBy(delta: Vector3): void;
   /**
-   * Counts the moves to a new place: every `placeUser` adds one (turning in place does not). A
-   * pending floor correction applies only while it is unchanged. Any new way of moving the user
-   * must add one too.
+   * The head now, allocation-free: the eye, the unit view direction (up and down included) and
+   * the floor point below the eye, all in scene coordinates, written into the given vectors.
    */
-  readonly generation: number;
+  headInto(eye: Vector3, forward: Vector3, floorPoint: Vector3): void;
   /** The head now: eye and the floor point below it in scene coordinates, and its yaw. */
   head(): { eye: Vector3; floorPoint: Vector3; yawDeg: number };
 }

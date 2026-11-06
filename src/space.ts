@@ -69,6 +69,10 @@ export function createSpace(ctx: KitContext): SpaceController {
   }
 
   return {
+    get generation() {
+      return generation;
+    },
+
     reset(nextBase: XRReferenceSpace): void {
       base = nextBase;
       setUpRotation();
@@ -100,8 +104,18 @@ export function createSpace(ctx: KitContext): SpaceController {
       apply();
     },
 
-    get generation() {
-      return generation;
+    moveBy(delta: Vector3): void {
+      if (ctx.mode === "ar") return;
+      generation++;
+      position.add(delta);
+      apply();
+    },
+
+    headInto(eye: Vector3, forward: Vector3, floorPoint: Vector3): void {
+      rotation(q);
+      eye.copy(headBase).applyQuaternion(q).add(position);
+      forward.copy(forwardBase).applyQuaternion(q);
+      projectToPlane(eye, position, ctx.up, floorPoint);
     },
 
     head() {

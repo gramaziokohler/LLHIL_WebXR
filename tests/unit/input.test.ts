@@ -422,3 +422,93 @@ describe("controller and hand models", () => {
     expect(spies.handModels).toHaveLength(SLOT_COUNT * 2);
   });
 });
+
+describe("menu-button", () => {
+  function padSource(handedness: XRHandedness, targetRayMode: XRTargetRayMode = "tracked-pointer") {
+    const buttons = Array.from({ length: 7 }, () => ({ pressed: false, touched: false, value: 0 }));
+    const source = {
+      ...fakeSource(targetRayMode, { handedness, hand: false }),
+      gamepad: { id: "pad", axes: [0, 0, 0, 0], buttons } as unknown as Gamepad,
+    } as XRInputSource;
+    return { source, buttons };
+  }
+
+  function menuSetup() {
+    const t = setup();
+    const menu: string[] = [];
+    t.ctx.events.on("menu-button", ({ hand }) => menu.push(hand));
+    t.input.start();
+    return { ...t, menu };
+  }
+
+  it("emits once per press edge of buttons[5], with the hand", () => {
+    const now = vi.spyOn(performance, "now");
+    let time = 1000;
+    now.mockImplementation(() => time);
+    const t = menuSetup();
+    const right = padSource("right");
+    const left = padSource("left");
+    dispatch(t.xr.controllers[0], "connected", right.source);
+    dispatch(t.xr.controllers[1], "connected", left.source);
+    t.input.update(frame, 0.016);
+    expect(t.menu).toEqual([]);
+    right.buttons[5].pressed = true;
+    t.input.update(frame, 0.016);
+    time += 16;
+    t.input.update(frame, 0.016);
+    expect(t.menu).toEqual(["right"]);
+    // Other buttons do nothing.
+    left.buttons[4].pressed = true;
+    left.buttons[1].pressed = true;
+    t.input.update(frame, 0.016);
+    expect(t.menu).toEqual(["right"]);
+    left.buttons[5].pressed = true;
+    t.input.update(frame, 0.016);
+    expect(t.menu).toEqual(["right", "left"]);
+    // Released and pressed again after the debounce window: a second press.
+    right.buttons[5].pressed = false;
+    time += 300;
+    t.input.update(frame, 0.016);
+    right.buttons[5].pressed = true;
+    t.input.update(frame, 0.016);
+    expect(t.menu).toEqual(["right", "left", "right"]);
+    now.mockRestore();
+  });
+
+  it("ignores contact bounce within the debounce window", () => {
+    const now = vi.spyOn(performance, "now");
+    let time = 5000;
+    now.mockImplementation(() => time);
+    const t = menuSetup();
+    const right = padSource("right");
+    dispatch(t.xr.controllers[0], "connected", right.source);
+    for (let i = 0; i < 6; i++) {
+      right.buttons[5].pressed = i % 2 === 0;
+      t.input.update(frame, 0.016);
+      time += 20;
+    }
+    expect(t.menu).toEqual(["right"]);
+    now.mockRestore();
+  });
+
+  it("is VR only and ignores hands and sources without a side", () => {
+    const t = menuSetup();
+    const none = padSource("none");
+    const hand = padSource("left");
+    (hand.source as any).hand = new Map();
+    dispatch(t.xr.controllers[0], "connected", none.source);
+    dispatch(t.xr.controllers[1], "connected", hand.source);
+    none.buttons[5].pressed = true;
+    hand.buttons[5].pressed = true;
+    t.input.update(frame, 0.016);
+    expect(t.menu).toEqual([]);
+
+    const ar = menuSetup();
+    (ar.ctx as any).mode = "ar";
+    const right = padSource("right");
+    dispatch(ar.xr.controllers[0], "connected", right.source);
+    right.buttons[5].pressed = true;
+    ar.input.update(frame, 0.016);
+    expect(ar.menu).toEqual([]);
+  });
+});

@@ -23,6 +23,7 @@ import {
   createXRKit,
   directionFromYaw,
   type KitEvents,
+  type LocomotionMode,
   parseViewpointsFile,
   parseViewpointsFileAR,
   type ViewpointsFileAR,
@@ -39,6 +40,9 @@ const up: UpAxis = params.get("up") === "z" ? "z" : "y";
 /** ?diag=1: the in-headset diagnostics panel from the start. */
 const diag = params.get("diag") === "1";
 const upVector = up === "z" ? new Vector3(0, 0, 1) : new Vector3(0, 1, 0);
+// VR thumbstick locomotion: walk by default, ?loco=fly or ?loco=teleport otherwise.
+const locoParam = params.get("loco");
+const loco: LocomotionMode = locoParam === "fly" || locoParam === "teleport" ? locoParam : "walk";
 const DEFAULT_FOV = 50;
 
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -136,6 +140,7 @@ function rebuildKit(): void {
     floors: content.floors,
     viewpoints,
     diagnostics: { enabled: diag },
+    vr: { locomotion: { mode: loco } },
   });
   kit.on("sessionend", onResize);
   kit.on("sessionstart", renderOnsite);
