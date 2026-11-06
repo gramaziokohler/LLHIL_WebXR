@@ -14,9 +14,10 @@ import {
 } from "./helpers";
 
 // The VR menu under the emulated Quest 3. The harness has two viewpoints and one host toggle,
-// so the menu reads: Viewpoints, Entrance, Mezzanine, Show marks, Exit VR.
-const ROWS = 5;
-const SLOT = { entrance: 1, mezzanine: 2, marks: 3, exit: 4 };
+// and the kit has locomotion and diagnostics, so the menu reads: Viewpoints, Entrance, Mezzanine,
+// Walk / Fly, Diagnostics, Show marks, Exit VR.
+const ROWS = 7;
+const SLOT = { entrance: 1, mezzanine: 2, locomotion: 3, diagnostics: 4, marks: 5, exit: 6 };
 
 async function enterVR(page: Page): Promise<void> {
   await clickXRButton(page, /enter vr|open in vr/i);
@@ -25,7 +26,7 @@ async function enterVR(page: Page): Promise<void> {
 }
 
 async function openMenu(page: Page): Promise<void> {
-  // The B/Y button comes with the locomotion module; the host call opens the same menu.
+  // The host call opens the same menu as B/Y (the menu-button event, covered in locomotion.spec).
   await page.evaluate(() => window.__kit.openMenu());
   await waitForEvent(page, "menu");
   await frames(page, 2);

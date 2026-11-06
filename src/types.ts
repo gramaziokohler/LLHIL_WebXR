@@ -44,15 +44,44 @@ export interface ViewpointsFile {
   viewpoints: Viewpoint[];
 }
 
+/**
+ * How the thumbsticks move the user in VR. Both controllers are identical, so everything works
+ * with one hand: the stick walks (or flies), grip held plus stick left/right turns, the trigger
+ * teleports.
+ *
+ * - `"walk"`: the stick moves the user horizontally, relative to where the head looks, kept on the
+ *   floors (steps up to 0.35 m, falls smoothly down, never into the void) and stopped by walls.
+ * - `"fly"`: the stick moves along the full head direction, up and down included; walls still stop.
+ * - `"teleport"`: the stick does nothing but turning with the grip held.
+ */
+export type LocomotionMode = "walk" | "fly" | "teleport";
+
+export interface LocomotionOptions {
+  /** Default `"walk"`. */
+  mode: LocomotionMode;
+  /** Walking (and flying) speed at full stick, m/s. Default 1.4. */
+  speed: number;
+  /** Grip held plus stick left/right: snap turn in steps, or smooth turn. Default `"snap"`. */
+  turn: "snap" | "smooth";
+  /** Degrees per snap turn. Default `vr.snapDegrees` (30). */
+  snapDegrees: number;
+  /** Smooth turn rate at full stick, degrees per second. Default 90. */
+  smoothDegreesPerSecond: number;
+  /** Darken the edges of the view while moving or smooth-turning, for comfort. Default true. */
+  vignette: boolean;
+}
+
 export interface VROptions {
-  /** Snap turn on the thumbstick, or no turning. Default `"snap"`. */
+  /** Turning (grip held plus stick left/right), or no turning. Default `"snap"`. */
   turn?: "snap" | "none";
   /** Degrees per snap. Default 30. */
   snapDegrees?: number;
   /** Eye height in metres, used when no floor is found below a viewpoint. Default 1.6. */
   eyeHeight?: number;
-  /** Teleport on the floors. Default true. */
+  /** Teleport on the floors with the trigger (pinch with hands). Default true. */
   teleport?: boolean;
+  /** Thumbstick locomotion; see `LocomotionOptions` for the defaults. */
+  locomotion?: Partial<LocomotionOptions>;
 }
 
 export interface AROptions {
@@ -265,6 +294,13 @@ export interface KitEvents {
   "menu-select": { id: string; value?: boolean };
   /** The VR menu opened or closed. */
   menu: { open: boolean };
+  /** The locomotion mode changed (`kit.setLocomotion`). */
+  locomotion: { mode: LocomotionMode };
+  /**
+   * VR: the top face button of a controller was pressed (B on the right, Y on the left;
+   * xr-standard `buttons[5]`). Reserved for a menu; the kit itself does nothing else with it.
+   */
+  "menu-button": { hand: "left" | "right" };
 }
 
 export interface XRKit {
@@ -291,6 +327,13 @@ export interface XRKit {
   forgetAlignment(id: string): Promise<void>;
   /** The on-site alignment state, or null outside an on-site AR session. */
   readonly alignmentState: AlignmentState | null;
+  /**
+   * Changes the VR locomotion, now or for the next session; emits `locomotion` when the mode
+   * changes. Invalid values are ignored with a warning.
+   */
+  setLocomotion(patch: Partial<LocomotionOptions>): void;
+  /** The VR locomotion in use, every default applied. */
+  readonly locomotion: Readonly<LocomotionOptions>;
   /** Call once per frame from the host's own animation loop, passing the XRFrame when there is one. */
   update(frame?: XRFrame): void;
   /** The active mode, or null on the desktop. */

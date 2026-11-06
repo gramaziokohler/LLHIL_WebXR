@@ -1,5 +1,7 @@
-// Teleport (parabolic arc for controllers, straight ray for hands and transient pointers) and
-// snap turn on the thumbstick. Moves the user only through ctx.space.
+// Teleport (parabolic arc for controllers, straight ray for hands and transient pointers), aimed
+// while the trigger (select, pinch with hands) is held and taken on release. The trigger is the
+// only way to teleport: the thumbsticks walk and turn (src/locomotion.ts). Moves the user only
+// through ctx.space.
 import {
   BufferAttribute,
   BufferGeometry,
@@ -29,8 +31,6 @@ export const STRAIGHT_FAR = 30;
 
 const MARKER_RADIUS = 0.3;
 const MAX_SLOPE_COS = Math.cos((30 * Math.PI) / 180);
-const PRESS = 0.6;
-const RELEASE = 0.3;
 
 export interface ArcResult {
   /** Points written to `positions` (the last one is the hit point when there is a hit). */
@@ -94,20 +94,6 @@ export function isValidFloor(hit: RaycastHit, up: Vector3): boolean {
   return hit.normal === null || hit.normal.dot(up) >= MAX_SLOPE_COS;
 }
 
-/** Thumbstick forward/back: axes[3] on xr-standard gamepads, axes[1] when only two exist. */
-function stickY(gamepad: Gamepad | undefined): number {
-  if (!gamepad) return 0;
-  const axes = gamepad.axes;
-  return (axes.length >= 4 ? axes[3] : axes[1]) ?? 0;
-}
-
-/** Thumbstick left/right: axes[2], or axes[0] when only two exist. */
-function stickX(gamepad: Gamepad | undefined): number {
-  if (!gamepad) return 0;
-  const axes = gamepad.axes;
-  return (axes.length >= 4 ? axes[2] : axes[0]) ?? 0;
-}
-
 export function createTeleport(ctx: KitContext): KitModule {
   const positions = new Float32Array(ARC_SAMPLES * 3);
   const arc: ArcResult = { count: 0, hit: null };
@@ -145,12 +131,9 @@ export function createTeleport(ctx: KitContext): KitModule {
   let unsubscribe: (() => void)[] = [];
   let aimRay: RaySource | null = null;
   let aimId: string | null = null;
-  let aimBy: "select" | "stick" = "select";
   let hasTarget = false;
   let targetValid = false;
   const targetPoint = new Vector3();
-  // Per input source: whether the stick has returned to centre since the last snap.
-  const turnArmed = new Map<string, boolean>();
 
   const teleportOn = () => ctx.options.vr.teleport;
   const live = () => running && ctx.mode === "vr" && !ctx.uiCapture;
@@ -160,10 +143,9 @@ export function createTeleport(ctx: KitContext): KitModule {
     marker.visible = false;
   }
 
-  function beginAim(ray: RaySource, by: "select" | "stick"): void {
+  function beginAim(ray: RaySource): void {
     aimRay = ray;
     aimId = ray.id;
-    aimBy = by;
     hasTarget = false;
     targetValid = false;
   }
@@ -225,11 +207,11 @@ export function createTeleport(ctx: KitContext): KitModule {
 
   function onSelectStart({ ray }: { ray: RaySource }): void {
     if (!live() || !teleportOn() || aimId !== null) return;
-    beginAim(ray, "select");
+    beginAim(ray);
   }
 
   function onSelectEnd({ ray }: { ray: RaySource }): void {
-    if (!live() || aimId !== ray.id || aimBy !== "select") return;
+    if (!live() || aimId !== ray.id) return;
     finishAim(ray);
   }
 
@@ -238,32 +220,11 @@ export function createTeleport(ctx: KitContext): KitModule {
     return null;
   }
 
-  function updateTurn(ray: RaySource): void {
-    if (!ray.gamepad || ctx.options.vr.turn === "none") return;
-    const x = stickX(ray.gamepad);
-    const armed = turnArmed.get(ray.id) ?? true;
-    if (Math.abs(x) < RELEASE) {
-      if (!armed) turnArmed.set(ray.id, true);
-      return;
-    }
-    if (aimId === ray.id && aimBy === "stick") {
-      // A diagonal push while aiming is not a turn; wait for the stick to centre.
-      if (armed) turnArmed.set(ray.id, false);
-      return;
-    }
-    if (armed && Math.abs(x) > PRESS) {
-      const deg = ctx.options.vr.snapDegrees;
-      ctx.space.snapTurn(x > 0 ? -deg : deg);
-      turnArmed.set(ray.id, false);
-    }
-  }
-
   return {
     start(): void {
       running = ctx.mode === "vr";
       if (!running) return;
       clearAim();
-      turnArmed.clear();
       ctx.root.add(line, marker);
       unsubscribe = [
         ctx.events.on("selectstart", onSelectStart),
@@ -272,31 +233,12 @@ export function createTeleport(ctx: KitContext): KitModule {
     },
 
     update(_frame: XRFrame, _dt: number): void {
-      if (!live()) return;
-      const rays = ctx.input.rays();
-
-      if (aimId !== null) {
-        const current = findRay(rays, aimId);
-        if (aimBy === "stick") {
-          if (!current) clearAim();
-          else if (stickY(current.gamepad) > -RELEASE) finishAim(current);
-          else aim(current);
-        } else {
-          // Between selectstart and selectend; the source keeps its last pose if it is not listed.
-          const ray = current ?? aimRay;
-          if (ray) aim(ray);
-        }
-      } else if (teleportOn()) {
-        for (const r of rays) {
-          if (r.kind === "controller" && stickY(r.gamepad) < -PRESS) {
-            beginAim(r, "stick");
-            aim(r);
-            break;
-          }
-        }
-      }
-
-      for (const r of rays) updateTurn(r);
+      // A UI took the controllers mid-aim: drop the aim, or its selectend would never land.
+      if (ctx.uiCapture && aimId !== null) clearAim();
+      if (!live() || aimId === null) return;
+      // Between selectstart and selectend; the source keeps its last pose if it is not listed.
+      const ray = findRay(ctx.input.rays(), aimId) ?? aimRay;
+      if (ray) aim(ray);
     },
 
     stop(): void {
@@ -304,7 +246,6 @@ export function createTeleport(ctx: KitContext): KitModule {
       unsubscribe = [];
       running = false;
       clearAim();
-      turnArmed.clear();
     },
 
     dispose(): void {
