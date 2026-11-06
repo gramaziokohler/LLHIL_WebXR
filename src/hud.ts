@@ -26,7 +26,8 @@ export const HUD_MAX_LINES = 3;
 /** Draws after everything else, so real geometry never hides it. */
 export const HUD_RENDER_ORDER = 10000;
 
-const FONT_FAMILY = "system-ui, sans-serif";
+/** The kit's own neutral type: the platform's sans-serif. */
+export const FONT_FAMILY = "system-ui, sans-serif";
 const TITLE_SIZE = 64;
 const LINE_SIZE = 42;
 const MIN_SCALE = 0.7;
@@ -35,18 +36,21 @@ const GAP = 22;
 const LINE_GAP = 14;
 const RADIUS = 40;
 
-type Canvas2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+export type Canvas2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 /** A canvas with a 2D context, or null where there is none (Node, or a stubbed DOM). */
-function createCanvas(): { canvas: HTMLCanvasElement | OffscreenCanvas; g: Canvas2D } | null {
+export function createCanvas(
+  width = HUD_CANVAS_WIDTH,
+  height = HUD_CANVAS_HEIGHT,
+): { canvas: HTMLCanvasElement | OffscreenCanvas; g: Canvas2D } | null {
   try {
     let canvas: HTMLCanvasElement | OffscreenCanvas | null = null;
     if (typeof document !== "undefined" && typeof document.createElement === "function") {
       canvas = document.createElement("canvas");
-      canvas.width = HUD_CANVAS_WIDTH;
-      canvas.height = HUD_CANVAS_HEIGHT;
+      canvas.width = width;
+      canvas.height = height;
     } else if (typeof OffscreenCanvas !== "undefined") {
-      canvas = new OffscreenCanvas(HUD_CANVAS_WIDTH, HUD_CANVAS_HEIGHT);
+      canvas = new OffscreenCanvas(width, height);
     }
     if (!canvas) return null;
     const g = canvas.getContext("2d") as Canvas2D | null;
@@ -67,7 +71,14 @@ function noopHud(): HudController {
   };
 }
 
-function roundedRect(g: Canvas2D, x: number, y: number, w: number, h: number, r: number): void {
+export function roundedRect(
+  g: Canvas2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
   // arcTo rather than roundRect: older canvas implementations lack the latter.
   g.beginPath();
   g.moveTo(x + r, y);
@@ -83,8 +94,15 @@ function roundedRect(g: Canvas2D, x: number, y: number, w: number, h: number, r:
 }
 
 /** Shrinks the font to fit `maxWidth`, then cuts the text with an ellipsis if it still overflows. */
-function fitText(g: Canvas2D, text: string, size: number, weight: string, maxWidth: number) {
-  const font = (s: number) => `${weight} ${Math.round(s)}px ${FONT_FAMILY}`;
+export function fitText(
+  g: Canvas2D,
+  text: string,
+  size: number,
+  weight: string,
+  maxWidth: number,
+  family = FONT_FAMILY,
+): string {
+  const font = (s: number) => `${weight} ${Math.round(s)}px ${family}`;
   g.font = font(size);
   if (typeof g.measureText !== "function") return text;
   let width = g.measureText(text).width;
