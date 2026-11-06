@@ -9,6 +9,7 @@ import type {
   DiagnosticsController,
   KitContext,
   KitModule,
+  MenuController,
   ResolvedOptions,
   SessionController,
   ViewpointsController,
@@ -18,6 +19,8 @@ import { createDefaultRaycast } from "./raycast";
 import { createSessionController } from "./session";
 import { createSpace } from "./space";
 import { createHud } from "./hud";
+import { createMenu } from "./menu";
+import { DEFAULT_THEME, mergeTheme } from "./theme";
 import { createTeleport } from "./teleport";
 import type {
   EnterAROptions,
@@ -34,6 +37,7 @@ export type * from "./types";
 export { createXRButtons, type XRButtons, type XRButtonsOptions } from "./buttons";
 export { parseViewpointsFile, parseViewpointsFileAR, type ViewpointsFileAR } from "./viewpoints";
 export { directionFromYaw, forwardAtYawZero, yawFromDirection } from "./math";
+export { DEFAULT_THEME } from "./theme";
 
 /** Applies every default. Exported for tests. */
 export function resolveOptions(options: XRKitOptions): ResolvedOptions {
@@ -67,6 +71,16 @@ export function resolveOptions(options: XRKitOptions): ResolvedOptions {
       enabled: options.diagnostics?.enabled ?? false,
       extra: options.diagnostics?.extra ?? null,
     },
+    ui: {
+      icons: { ...options.ui?.icons },
+      menu: {
+        builtins: [
+          ...(options.ui?.menu?.builtins ?? ["viewpoints", "locomotion", "diagnostics", "exit"]),
+        ],
+        hostItemsFirst: options.ui?.menu?.hostItemsFirst ?? false,
+        title: options.ui?.menu?.title ?? null,
+      },
+    },
   };
 }
 
@@ -91,6 +105,8 @@ export function createXRKit(options: XRKitOptions): XRKit {
     root,
     up: upVector(resolved.up),
     raycast: options.raycast ?? createDefaultRaycast(floors, () => resolved.model, root),
+    theme: mergeTheme(DEFAULT_THEME, options.ui?.theme),
+    uiCapture: false,
     mode: null,
     session: null,
   } as unknown as KitContext;
@@ -103,10 +119,15 @@ export function createXRKit(options: XRKitOptions): XRKit {
   const ar: ARController = createAR(ctx);
   const diagnostics: DiagnosticsController = createDiagnostics(ctx);
   viewpoints.set(resolved.viewpoints);
+  // The menu acts on the kit itself, so it lights up the kit's locomotion and diagnostics.
+  const menu: MenuController = createMenu(ctx, {
+    viewpoints: () => viewpoints.list(),
+    host: () => kit,
+  });
 
   const modulesFor = (mode: XRMode): KitModule[] =>
     mode === "vr"
-      ? [ctx.space, ctx.input, teleport, viewpoints, ctx.hud, diagnostics]
+      ? [ctx.space, ctx.input, teleport, viewpoints, menu, ctx.hud, diagnostics]
       : [ctx.space, ctx.input, ar, ctx.hud, diagnostics];
 
   let active: KitModule[] = [];
@@ -250,13 +271,38 @@ export function createXRKit(options: XRKitOptions): XRKit {
     get frameStats() {
       return diagnostics.stats;
     },
+    openMenu(): void {
+      if (ctx.mode === "vr") menu.open();
+    },
+    closeMenu(): void {
+      menu.close();
+    },
+    get menuOpen() {
+      return menu.isOpen;
+    },
+    setMenuItems(items) {
+      menu.setItems(items);
+    },
+    setTheme(patch) {
+      ctx.theme = mergeTheme(ctx.theme, patch);
+      ctx.events.emit("theme", { theme: ctx.theme });
+    },
     on<K extends keyof KitEvents>(event: K, listener: (payload: KitEvents[K]) => void) {
       return ctx.events.on(event, listener as (payload: AllEvents[K]) => void);
     },
     dispose(): void {
       // Ending the session first runs every module's stop() before its dispose().
       session.dispose();
-      for (const m of [teleport, viewpoints, ar, diagnostics, ctx.hud, ctx.input, ctx.space]) {
+      for (const m of [
+        teleport,
+        viewpoints,
+        menu,
+        ar,
+        diagnostics,
+        ctx.hud,
+        ctx.input,
+        ctx.space,
+      ]) {
         m.dispose();
       }
       root.removeFromParent();

@@ -131,6 +131,8 @@ const kit = createXRKit({
     : {}),
 });
 createXRButtons(kit, document.body);
+// One host item, so specs can check `menu-select` from the VR menu.
+kit.setMenuItems([{ id: "marks", label: "Show marks", kind: "toggle", value: true }]);
 
 // The kit's buttons enter table-top AR; on site needs the alignment, so the harness adds its own.
 if (alignment) {
@@ -155,6 +157,8 @@ record("sessionend", (p) => p);
 record("teleport", (p) => ({ position: p.position.toArray() }));
 record("viewpoint", (p) => p);
 record("placed", (p) => ({ matrix: [...p.matrix.elements] }));
+record("menu", (p) => p);
+record("menu-select", (p) => p);
 record("select", (p) => ({
   object: p.object?.name ?? null,
   point: p.point?.toArray() ?? null,
