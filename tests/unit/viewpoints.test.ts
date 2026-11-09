@@ -5,7 +5,7 @@ import type { AllEvents, KitContext } from "../../src/internal";
 import { upVector } from "../../src/math";
 import { createDefaultRaycast } from "../../src/raycast";
 import type { RaycastFn, UpAxis, Viewpoint } from "../../src/types";
-import { createViewpoints, parseViewpointsFile } from "../../src/viewpoints";
+import { createViewpoints, parseViewpointsFile, parseViewpointsFileAR } from "../../src/viewpoints";
 
 describe("parseViewpointsFile", () => {
   it("accepts a minimal file", () => {
@@ -164,6 +164,104 @@ describe("parseViewpointsFile", () => {
       "viewpoints[1].yaw: expected a finite number",
       "viewpoints[1].fov: expected a number between 0 and 180 (exclusive)",
       "viewpoints[2]: expected an object",
+    ]);
+  });
+});
+
+describe("parseViewpointsFileAR", () => {
+  const alignment = {
+    id: "site",
+    a: [0, 0, 0],
+    b: [12, 0, -5],
+    labels: { a: "south-west corner", b: "north-east corner" },
+  };
+  const file = <T>(ar: T) => ({ version: 1, viewpoints: [], ar });
+
+  it("returns null when the file has no ar section", () => {
+    expect(parseViewpointsFileAR({ version: 1, viewpoints: [] })).toBeNull();
+    expect(parseViewpointsFileAR('{"version":1,"viewpoints":[]}')).toBeNull();
+  });
+
+  it("accepts an empty ar section", () => {
+    expect(parseViewpointsFileAR(file({}))).toEqual({});
+  });
+
+  it("accepts a full ar section, drops unknown keys and copies the input", () => {
+    const input = file({ alignment: { ...alignment, note: 1 }, hide: ["terrain", "trees"], x: 2 });
+    const ar = parseViewpointsFileAR(input);
+    expect(ar).toEqual({ alignment, hide: ["terrain", "trees"] });
+    expect(ar?.alignment?.a).not.toBe(alignment.a);
+    expect(ar?.hide).not.toBe(input.ar.hide);
+  });
+
+  it("accepts an alignment without labels, or with one label", () => {
+    const { labels: _, ...bare } = alignment;
+    expect(parseViewpointsFileAR(file({ alignment: bare }))).toEqual({ alignment: bare });
+    expect(parseViewpointsFileAR(file({ alignment: { ...bare, labels: { b: "gate" } } }))).toEqual({
+      alignment: { ...bare, labels: { b: "gate" } },
+    });
+  });
+
+  it("parses JSON text", () => {
+    expect(parseViewpointsFileAR(JSON.stringify(file({ hide: ["terrain"] })))).toEqual({
+      hide: ["terrain"],
+    });
+  });
+
+  it("leaves parseViewpointsFile accepting a file with an ar section", () => {
+    expect(parseViewpointsFile(file({ alignment, hide: ["terrain"] }))).toEqual({
+      version: 1,
+      viewpoints: [],
+    });
+  });
+
+  it("rejects malformed JSON text and a non-object top level", () => {
+    expect(() => parseViewpointsFileAR("{ ar: ")).toThrow(
+      /^\[llhil-webxr\] viewpoints: invalid JSON/,
+    );
+    expect(() => parseViewpointsFileAR([])).toThrow("expected an object at the top level");
+  });
+
+  it.each([
+    [[], "ar: expected an object"],
+    ["on", "ar: expected an object"],
+    [{ alignment: 1 }, "ar.alignment: expected an object"],
+    [{ alignment: { ...alignment, id: "" } }, "ar.alignment.id: expected a non-empty string"],
+    [{ alignment: { ...alignment, id: undefined } }, "ar.alignment.id"],
+    [{ alignment: { ...alignment, a: [0, 0] } }, "ar.alignment.a: expected 3 finite numbers"],
+    [{ alignment: { ...alignment, a: [0, Number.NaN, 0] } }, "ar.alignment.a"],
+    [{ alignment: { ...alignment, b: "1,2,3" } }, "ar.alignment.b: expected 3 finite numbers"],
+    [
+      { alignment: { ...alignment, b: [0, 0, 0] } },
+      "ar.alignment.b: expected a point apart from a",
+    ],
+    [{ alignment: { ...alignment, labels: "A" } }, "ar.alignment.labels: expected an object"],
+    [{ alignment: { ...alignment, labels: { a: 1 } } }, "ar.alignment.labels.a: expected a string"],
+    [{ hide: "terrain" }, "ar.hide: expected an array of object names"],
+    [{ hide: ["terrain", 3] }, "ar.hide[1]: expected a non-empty string"],
+    [{ hide: [""] }, "ar.hide[0]: expected a non-empty string"],
+  ])("rejects ar %j", (ar, message) => {
+    expect(() => parseViewpointsFileAR(file(ar))).toThrow(`[llhil-webxr] viewpoints: ${message}`);
+  });
+
+  it("reports every problem in the ar section at once", () => {
+    let message = "";
+    try {
+      parseViewpointsFileAR(
+        file({ alignment: { a: [0, 0], b: [1, 2, 3], labels: { b: false } }, hide: [null] }),
+      );
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    const lines = message
+      .split("\n")
+      .slice(1)
+      .map((l) => l.trim());
+    expect(lines).toEqual([
+      "ar.alignment.id: expected a non-empty string",
+      "ar.alignment.a: expected 3 finite numbers",
+      "ar.alignment.labels.b: expected a string",
+      "ar.hide[0]: expected a non-empty string",
     ]);
   });
 });
