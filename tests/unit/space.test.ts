@@ -151,6 +151,42 @@ describe("space controller", () => {
         closeYaw(h.yawDeg, 45);
       });
 
+      it("moveBy translates the user; headInto matches head() without allocating", () => {
+        const { space, base, current } = setup(up);
+        space.reset(base as unknown as XRReferenceSpace);
+        const pitchDown = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -0.5);
+        const frame = makeFrame(HEAD, yawQuat(40).multiply(pitchDown));
+        space.update(frame, 0);
+        space.placeUser(up === "z" ? new Vector3(1, 2, 0.5) : new Vector3(1, 0.5, -2), 10);
+        const before = space.head();
+        const generation = space.generation;
+        const delta = up === "z" ? new Vector3(0.3, -0.2, 0.1) : new Vector3(0.3, 0.1, 0.2);
+        space.moveBy(delta);
+        // A walk step counts as a move, like placeUser.
+        expect(space.generation).toBe(generation + 1);
+        space.placeUser(space.head().floorPoint);
+        expect(space.generation).toBe(generation + 2);
+        const after = space.head();
+        close(after.eye, before.eye.clone().add(delta));
+        close(after.floorPoint, before.floorPoint.clone().add(delta));
+        closeYaw(after.yawDeg, before.yawDeg);
+        // The pose three.js sees in the new space agrees.
+        const p = frame.getViewerPose(current() as unknown as XRReferenceSpace)?.transform
+          .position as DOMPointReadOnly;
+        close(new Vector3(p.x, p.y, p.z), after.eye);
+
+        const eye = new Vector3();
+        const forward = new Vector3();
+        const floor = new Vector3();
+        space.headInto(eye, forward, floor);
+        close(eye, after.eye);
+        close(floor, after.floorPoint);
+        expect(forward.length()).toBeCloseTo(1, 9);
+        // The full view direction, pitch included: looking down.
+        expect(forward.dot(upVector(up))).toBeCloseTo(-Math.sin(0.5), 6);
+        closeYaw(yawFromDirection(forward, up), after.yawDeg);
+      });
+
       it("places the head's floor point on the target, facing the given yaw", () => {
         const { space, base } = setup(up);
         space.reset(base as unknown as XRReferenceSpace);
@@ -203,13 +239,16 @@ describe("space controller", () => {
         closeYaw(h.yawDeg, 90);
       });
 
-      it("ignores placeUser and snapTurn in AR, but still applies the up rotation", () => {
+      it("ignores placeUser, snapTurn and moveBy in AR, but still applies the up rotation", () => {
         const { space, base, setReferenceSpace } = setup(up, "ar");
         space.reset(base as unknown as XRReferenceSpace);
         expect(setReferenceSpace).toHaveBeenCalledTimes(1);
         space.update(makeFrame(HEAD), 0);
         space.placeUser(new Vector3(9, 9, 9), 45);
         space.snapTurn(30);
+        const generation = space.generation;
+        space.moveBy(new Vector3(1, 1, 1));
+        expect(space.generation).toBe(generation);
         expect(setReferenceSpace).toHaveBeenCalledTimes(1);
         const h = space.head();
         close(h.eye, expectedAfterReset[up].eye);

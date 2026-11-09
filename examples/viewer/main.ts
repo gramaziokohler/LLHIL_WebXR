@@ -23,6 +23,7 @@ import {
   createXRKit,
   directionFromYaw,
   type KitEvents,
+  type LocomotionMode,
   parseViewpointsFile,
   parseViewpointsFileAR,
   type ViewpointsFileAR,
@@ -36,7 +37,12 @@ import { createDemoScene, createLights, DEMO } from "./demo-scene";
 
 const params = new URLSearchParams(location.search);
 const up: UpAxis = params.get("up") === "z" ? "z" : "y";
+/** ?diag=1: the in-headset diagnostics panel from the start. */
+const diag = params.get("diag") === "1";
 const upVector = up === "z" ? new Vector3(0, 0, 1) : new Vector3(0, 1, 0);
+// VR thumbstick locomotion: walk by default, ?loco=fly or ?loco=teleport otherwise.
+const locoParam = params.get("loco");
+const loco: LocomotionMode = locoParam === "fly" || locoParam === "teleport" ? locoParam : "walk";
 const DEFAULT_FOV = 50;
 
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -108,6 +114,16 @@ let demoAlignment: ARAlignment | null = null;
 let fileAR: ViewpointsFileAR | null = null;
 let arSupported = false;
 
+/** Whether the floor markers under the viewpoints (`marker-*`) are shown. */
+let marksVisible = true;
+
+function setMarksVisible(visible: boolean): void {
+  marksVisible = visible;
+  content?.model.traverse((o) => {
+    if (o.name.startsWith("marker-")) o.visible = visible;
+  });
+}
+
 /** The kit takes its model, floors and units at creation, so a new model means a new kit. */
 function rebuildKit(): void {
   if (!content) return;
@@ -123,6 +139,8 @@ function rebuildKit(): void {
     metresPerUnit,
     floors: content.floors,
     viewpoints,
+    diagnostics: { enabled: diag },
+    vr: { locomotion: { mode: loco } },
   });
   kit.on("sessionend", onResize);
   kit.on("sessionstart", renderOnsite);
@@ -132,6 +150,11 @@ function rebuildKit(): void {
     renderOnsite();
   });
   kit.on("alignment", onAlignment);
+  // The VR menu: one host item, a toggle for the floor markers under the viewpoints.
+  kit.setMenuItems([{ id: "marks", label: "Show marks", kind: "toggle", value: marksVisible }]);
+  kit.on("menu-select", ({ id, value }) => {
+    if (id === "marks") setMarksVisible(value === true);
+  });
   buttons = createXRButtons(kit, ui.xr);
   ui.alignmentState.textContent = "";
   arSupported = false;
@@ -157,6 +180,7 @@ function setContent(next: Content): void {
   scene.add(next.model);
   if (next.extra) scene.add(next.extra);
   next.model.updateMatrixWorld(true);
+  setMarksVisible(marksVisible);
   fitCamera(new Box3().setFromObject(next.model));
   rebuildKit();
   renderViewpoints();

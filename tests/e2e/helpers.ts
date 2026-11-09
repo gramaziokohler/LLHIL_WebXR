@@ -6,14 +6,17 @@ type Vec3 = [number, number, number];
 
 /**
  * Opens the harness and waits until it (and in AR, the synthetic room) is ready. With
- * `alignment`, AR offers the harness's on-site alignment (id "e2e") through its own button.
+ * `alignment`, AR offers the harness's on-site alignment (id "e2e") through its own button; with
+ * `demo`, the scene is the example viewer's demo building.
  */
 export async function openHarness(
   page: Page,
   mode: "vr" | "ar" = "vr",
-  options: { alignment?: boolean } = {},
+  options: { alignment?: boolean; demo?: boolean } = {},
 ): Promise<void> {
-  const query = mode === "ar" ? (options.alignment ? "/?mode=ar&alignment=1" : "/?mode=ar") : "/";
+  let query = mode === "ar" ? (options.alignment ? "/?mode=ar&alignment=1" : "/?mode=ar") : "/";
+  // The example viewer's demo building instead of the plain ground and block.
+  if (options.demo) query += query.includes("?") ? "&scene=demo" : "?scene=demo";
   await page.goto(query);
   await page.waitForFunction(() => document.body.dataset.ready === "true");
 }
@@ -175,6 +178,54 @@ export async function pullTrigger(page: Page, hand: "left" | "right" = "right"):
   await frames(page, 5);
   await set(0);
   await frames(page, 5);
+}
+
+/** Sets a button of an emulated controller ("squeeze", "b-button", "y-button", ...). */
+export async function setButton(
+  page: Page,
+  hand: "left" | "right",
+  id: string,
+  value: number,
+): Promise<void> {
+  await page.evaluate(
+    ({ hand, id, value }) => window.__xrDevice.controllers[hand]!.updateButtonValue(id, value),
+    { hand, id, value },
+  );
+  await frames(page, 3);
+}
+
+/** Presses and releases a button of an emulated controller, holding it for a few frames. */
+export async function pressButton(page: Page, hand: "left" | "right", id: string): Promise<void> {
+  await setButton(page, hand, id, 1);
+  await setButton(page, hand, id, 0);
+}
+
+/** Snap turn as the kit maps it: grip held, stick pushed sideways and back, grip released. */
+export async function gripTurn(page: Page, hand: "left" | "right", x: number): Promise<void> {
+  await setButton(page, hand, "squeeze", 1);
+  await thumbstick(page, hand, x);
+  await thumbstick(page, hand, 0);
+  await setButton(page, hand, "squeeze", 0);
+}
+
+/**
+ * Holds a thumbstick at (x, y) until `done` (evaluated in the page) is true or `timeoutMs` passes,
+ * then centres it and lets a few frames settle.
+ */
+export async function holdStickUntil(
+  page: Page,
+  hand: "left" | "right",
+  stick: { x?: number; y?: number },
+  done: string,
+  timeoutMs = 15_000,
+): Promise<void> {
+  await thumbstick(page, hand, stick.x ?? 0, stick.y ?? 0);
+  try {
+    await page.waitForFunction(done, undefined, { timeout: timeoutMs, polling: 50 });
+  } finally {
+    await thumbstick(page, hand, 0, 0);
+    await frames(page, 3);
+  }
 }
 
 /** Moves a thumbstick through the emulator and holds it for a few frames. */
