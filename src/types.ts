@@ -187,6 +187,56 @@ export interface MenuItem {
   icon?: CanvasImageSource;
 }
 
+/** Which side of the view a VR side panel stands on. */
+export type PanelSide = "left" | "right";
+
+/** One segment of a `choice` row. */
+export interface PanelOption {
+  value: string;
+  label: string;
+}
+
+/**
+ * A row of a VR side panel.
+ *
+ * - `section`: a collapsible header; the rows whose `section` is its id follow it, shown only
+ *   while it is open. One section is open per side; the open one has `value: true`. Tapping it
+ *   emits `panel-input` with the new open state.
+ * - `action`: the trigger emits `panel-input` with its id.
+ * - `toggle`: an on/off switch; the trigger flips `value` (boolean) and emits the new value.
+ * - `choice`: segmented pills from `options`; the trigger on a pill sets `value` to its value
+ *   and emits it.
+ * - `slider`: a track from `min` (default 0) to `max` (default 1), snapped to `step` (default a
+ *   hundredth of the range). Hold the trigger on it and move the ray to drag; stick left/right
+ *   while it is hovered steps it. `format` writes the value shown (default `String`).
+ * - `text`: a paragraph, wrapped, at most six lines; never interactive.
+ */
+export interface PanelRow {
+  id: string;
+  kind: "section" | "action" | "toggle" | "choice" | "slider" | "text";
+  label: string;
+  /** toggle: boolean; choice: an option's value; slider: number; section: open. */
+  value?: boolean | number | string;
+  options?: PanelOption[];
+  min?: number;
+  max?: number;
+  step?: number;
+  format?: (v: number) => string;
+  /** Section headers and actions: drawn at the start of the row, `rowHeight - 2 * padding` square. */
+  icon?: CanvasImageSource;
+  /** Id of the section row this row belongs to. */
+  section?: string;
+  /** Drawn faded, never interactive. */
+  disabled?: boolean;
+}
+
+/** A VR side panel: a column of rows on one side of the view. One panel per side is shown. */
+export interface PanelSpec {
+  id: string;
+  side: PanelSide;
+  rows: PanelRow[];
+}
+
 /** Built-in sections of the VR menu. */
 export type MenuBuiltin = "viewpoints" | "locomotion" | "diagnostics" | "exit";
 
@@ -301,6 +351,14 @@ export interface KitEvents {
    * xr-standard `buttons[5]`). Reserved for a menu; the kit itself does nothing else with it.
    */
   "menu-button": { hand: "left" | "right" };
+  /**
+   * A row of a VR side panel was used: an action (no value), a toggle, choice or section (its new
+   * value), a slider (while dragging, at most about ten times a second, with `final: false`; on
+   * release, and for each stick step, with `final: true`).
+   */
+  "panel-input": { panel: string; id: string; value?: boolean | number | string; final?: boolean };
+  /** The VR side panels opened or closed. */
+  panels: { open: boolean };
 }
 
 export interface XRKit {
@@ -351,6 +409,18 @@ export interface XRKit {
   readonly menuOpen: boolean;
   /** Replace the host's entries in the VR menu; redraws it when open. */
   setMenuItems(items: MenuItem[]): void;
+  /**
+   * VR side panels, replacing any set before; `[]` removes them. While any are set, B and Y open
+   * and close the panels instead of the menu. Rows are copied: use `updatePanelRow` to change them.
+   */
+  setPanels(panels: PanelSpec[]): void;
+  /** Changes one row of a side panel (value, label, disabled, ...); redraws only that panel. */
+  updatePanelRow(panelId: string, rowId: string, patch: Partial<PanelRow>): void;
+  /** VR: open the side panels around the user (body-locked: they follow large turns only). */
+  openPanels(): void;
+  closePanels(): void;
+  /** The VR side panels are open. */
+  readonly panelsOpen: boolean;
   /** Change the look of the in-headset panels (merged into the current theme); redraws open ones. */
   setTheme(patch: Partial<UiTheme>): void;
   /** Subscribe to an event; returns the unsubscribe function. */

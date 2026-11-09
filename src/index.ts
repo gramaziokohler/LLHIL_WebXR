@@ -11,6 +11,7 @@ import type {
   KitContext,
   KitModule,
   MenuController,
+  PanelsController,
   ResolvedOptions,
   SessionController,
   ViewpointsController,
@@ -21,6 +22,7 @@ import { createSessionController } from "./session";
 import { createSpace } from "./space";
 import { createHud } from "./hud";
 import { createMenu } from "./menu";
+import { createPanels } from "./panels";
 import { DEFAULT_THEME, mergeTheme } from "./theme";
 import { createTeleport } from "./teleport";
 import type {
@@ -130,11 +132,15 @@ export function createXRKit(options: XRKitOptions): XRKit {
   const menu: MenuController = createMenu(ctx, {
     viewpoints: () => viewpoints.list(),
     host: () => kit,
+    // With side panels set, B and Y are theirs; the two share uiCapture.
+    yieldButton: () => panels.hasPanels,
+    otherCapture: () => panels.capturing,
   });
+  const panels: PanelsController = createPanels(ctx, { otherCapture: () => menu.capturing });
 
   const modulesFor = (mode: XRMode): KitModule[] =>
     mode === "vr"
-      ? [ctx.space, ctx.input, locomotion, teleport, viewpoints, menu, ctx.hud, diagnostics]
+      ? [ctx.space, ctx.input, locomotion, teleport, viewpoints, menu, panels, ctx.hud, diagnostics]
       : [ctx.space, ctx.input, ar, ctx.hud, diagnostics];
 
   let active: KitModule[] = [];
@@ -287,7 +293,9 @@ export function createXRKit(options: XRKitOptions): XRKit {
       return diagnostics.stats;
     },
     openMenu(): void {
-      if (ctx.mode === "vr") menu.open();
+      if (ctx.mode !== "vr") return;
+      panels.close();
+      menu.open();
     },
     closeMenu(): void {
       menu.close();
@@ -297,6 +305,23 @@ export function createXRKit(options: XRKitOptions): XRKit {
     },
     setMenuItems(items) {
       menu.setItems(items);
+    },
+    setPanels(list) {
+      panels.set(list);
+    },
+    updatePanelRow(panelId, rowId, patch) {
+      panels.updateRow(panelId, rowId, patch);
+    },
+    openPanels(): void {
+      if (ctx.mode !== "vr" || !panels.hasPanels) return;
+      menu.close();
+      panels.open();
+    },
+    closePanels(): void {
+      panels.close();
+    },
+    get panelsOpen() {
+      return panels.isOpen;
     },
     setTheme(patch) {
       ctx.theme = mergeTheme(ctx.theme, patch);
@@ -313,6 +338,7 @@ export function createXRKit(options: XRKitOptions): XRKit {
         teleport,
         viewpoints,
         menu,
+        panels,
         ar,
         diagnostics,
         ctx.hud,
