@@ -764,14 +764,19 @@ export function createAR(ctx: KitContext): ARController {
     restored = false;
     nudged = false;
     if (target) target.visible = false;
-    beginPlacing();
+    beginPlacing(true);
   }
 
   /** Nothing to restore: the marks, or (`stand`) the model placed from where the user stands. */
-  function beginPlacing(): void {
+  function beginPlacing(asked = false): void {
     touched = null;
     if (onsite?.start === "stand") {
       touchA = null;
+      // A host that lets the user choose where they stand first (hold) places on its realign().
+      if (onsite.hold && !asked) {
+        showHud("Choose where you stand", [MENU_HINT]);
+        return;
+      }
       wantStand = true;
       showHud("Stand on the point, face its direction");
     } else setState("pick-a");

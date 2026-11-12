@@ -740,6 +740,26 @@ describe("on-site alignment: fine-tune", () => {
     expect(t.ar.tool).toBe("move");
   });
 
+  it("start: stand with hold waits for realign() before it places", async () => {
+    const t = setup();
+    (t.frame as any).getViewerPose = () => ({
+      transform: {
+        position: { x: 2, y: 1.7, z: 3 },
+        matrix: new Matrix4().setPosition(2, 1.7, 3).elements,
+      },
+    });
+    await t.start({ ...ALIGNMENT, start: "stand", hold: true });
+    t.update();
+    t.update();
+    expect(t.ar.alignmentState).toBe(null);
+    expect(t.model.visible).toBe(false);
+    expect(t.lastHud()).toEqual(["Choose where you stand", ["Menu: B or Y"]]);
+    t.ar.realign();
+    t.update();
+    expect(t.ar.alignmentState).toBe("aligned");
+    near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
+  });
+
   it("nudge() turns about A and moves in the user's frame", async () => {
     const t = setup();
     await t.start();

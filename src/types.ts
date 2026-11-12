@@ -120,6 +120,12 @@ export interface ARAlignment {
    * trigger pulled; the first is point A, the second gives the direction to point B.
    */
   start?: "marks" | "stand";
+  /**
+   * With `start: "stand"`: nothing is placed when the session starts (and nothing saved is found);
+   * the host lets the user choose first, then calls `realign()`, which places from where the user
+   * stands.
+   */
+  hold?: boolean;
 }
 
 /**
