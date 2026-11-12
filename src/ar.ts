@@ -555,7 +555,7 @@ export function createAR(ctx: KitContext): ARController {
     if (state === "saved") {
       showHud(`${restored ? "Restored" : "Saved"}${error}`, [MENU_HINT]);
     } else if (state === "kept") {
-      showHud("Placed for this session", [`Not saved: ${keptWhy}`, MENU_HINT]);
+      showHud("Placed, not saved", [`Why: ${keptWhy}`, MENU_HINT]);
     } else {
       showHud(`Adjust, then save${error}`, [`Stick: ${tool}`, MENU_HINT]);
     }
@@ -774,7 +774,7 @@ export function createAR(ctx: KitContext): ARController {
       touchA = null;
       // A host that lets the user choose where they stand first (hold) places on its realign().
       if (onsite.hold && !asked) {
-        showHud("Choose where you stand", [MENU_HINT]);
+        showHud("Where do you stand?", [MENU_HINT]);
         return;
       }
       wantStand = true;
@@ -997,7 +997,7 @@ export function createAR(ctx: KitContext): ARController {
    * The device cannot keep the alignment (`why` says what failed): it holds for this session, so
    * the user is done placing; a later A tries again.
    */
-  function saveUnavailable(why = "no saved anchors"): boolean {
+  function saveUnavailable(why = "no anchors"): boolean {
     if (!isPlaced()) return false;
     keptWhy = why;
     if (state === "kept") placedHud();
@@ -1039,7 +1039,7 @@ export function createAR(ctx: KitContext): ARController {
     pendingSave = null;
     const create = frame.createAnchor?.bind(frame);
     if (!create || typeof XRRigidTransform === "undefined") {
-      request.resolve(saveUnavailable("no anchors in this session"));
+      request.resolve(saveUnavailable("no anchors"));
       return;
     }
     const pa = pivotA();
@@ -1055,16 +1055,14 @@ export function createAR(ctx: KitContext): ARController {
         ),
       );
     } catch {
-      request.resolve(saveUnavailable("an anchor was refused"));
+      request.resolve(saveUnavailable("anchor refused"));
       return;
     }
     Promise.allSettled(made).then((results) => {
       const anchors = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
       if (anchors.length < 2 || token !== pickToken || !active) {
         for (const a of anchors) a.delete();
-        request.resolve(
-          token === pickToken && active ? saveUnavailable("an anchor was not made") : false,
-        );
+        request.resolve(token === pickToken && active ? saveUnavailable("anchor not made") : false);
         return;
       }
       commitSave(anchors[0], anchors[1], true).then(request.resolve);
@@ -1077,7 +1075,7 @@ export function createAR(ctx: KitContext): ARController {
     if (!s || !alignment) return false;
     const token = pickToken;
     const rev = revision;
-    let ok = false;
+    let ok: boolean | string = false;
     try {
       // With the model points the anchors stand for: a restore places by them, whatever points
       // the next session's alignment carries.
@@ -1086,12 +1084,12 @@ export function createAR(ctx: KitContext): ARController {
       console.warn("[llhil-webxr] the alignment could not be saved", error);
       ok = false;
     }
-    if (!ok) {
+    if (ok !== true) {
       if (fresh) {
         a.delete();
         b.delete();
       }
-      if (token === pickToken && active) saveUnavailable("the headset did not keep it");
+      if (token === pickToken && active) saveUnavailable(typeof ok === "string" ? ok : "not kept");
       return false;
     }
     persistent.add(a);

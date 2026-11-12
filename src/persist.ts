@@ -66,7 +66,8 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
     },
 
     async save(session, id, a, b, points) {
-      if (!storage || !store.supported(session)) return false;
+      if (!storage) return "no storage";
+      if (!store.supported(session)) return "no anchors";
       const previous = read(id);
       // Handles the device already knew are not ours to delete on failure: a browser may hand back
       // the existing handle when an anchor is persisted twice.
@@ -75,7 +76,6 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
       const created: string[] = [];
       const cleanUp = async () => {
         for (const uuid of created) await deleteHandle(session, uuid);
-        return false;
       };
       try {
         const uuidA = await requestHandle(a);
@@ -90,7 +90,10 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
           savedAt: new Date().toISOString(),
           ...(points ? { p: points } : {}),
         });
-        if (!ok) return await cleanUp();
+        if (!ok) {
+          await cleanUp();
+          return "storage full";
+        }
         if (previous) {
           for (const old of [previous.a, previous.b]) {
             if (old !== uuidA && old !== uuidB) await deleteHandle(session, old);
@@ -98,7 +101,8 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
         }
         return true;
       } catch {
-        return await cleanUp();
+        await cleanUp();
+        return "handle refused";
       }
     },
 
@@ -165,17 +169,31 @@ function parse(raw: string): SavedRecord | null {
   }
 }
 
+/** Tries and the pause between them: a headset refuses a handle for an anchor it has not located yet. */
+const HANDLE_TRIES = 4;
+const HANDLE_RETRY_MS = 500;
+
 async function requestHandle(anchor: XRAnchor): Promise<string> {
   if (typeof anchor?.requestPersistentHandle !== "function") {
     throw new Error("persistent handles unsupported");
   }
-  const uuid = await withTimeout(
-    anchor.requestPersistentHandle(),
-    ANCHOR_TIMEOUT_MS,
-    "persistent handle",
-  );
-  if (typeof uuid !== "string" || uuid === "") throw new Error("invalid persistent handle");
-  return uuid;
+  let last: unknown;
+  for (let i = 0; i < HANDLE_TRIES; i++) {
+    if (i > 0) await new Promise((resolve) => setTimeout(resolve, HANDLE_RETRY_MS));
+    try {
+      const uuid = await withTimeout(
+        anchor.requestPersistentHandle(),
+        ANCHOR_TIMEOUT_MS,
+        "persistent handle",
+      );
+      if (typeof uuid === "string" && uuid !== "") return uuid;
+      last = new Error("invalid persistent handle");
+    } catch (error) {
+      last = error;
+    }
+  }
+  console.warn("[llhil-webxr] no persistent handle for the anchor", last);
+  throw last;
 }
 
 /** The handles the session knows, or null when it does not expose the list. */

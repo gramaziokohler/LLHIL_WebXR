@@ -753,7 +753,7 @@ describe("on-site alignment: fine-tune", () => {
     t.update();
     expect(t.ar.alignmentState).toBe(null);
     expect(t.model.visible).toBe(false);
-    expect(t.lastHud()).toEqual(["Choose where you stand", ["Menu: B or Y"]]);
+    expect(t.lastHud()).toEqual(["Where do you stand?", ["Menu: B or Y"]]);
     t.ar.realign();
     t.update();
     expect(t.ar.alignmentState).toBe("aligned");
@@ -888,10 +888,7 @@ describe("on-site alignment: save and realign", () => {
     await expect(t.ar.saveAlignment()).resolves.toBe(false);
     t.update();
     // Not kept on the device: it holds for this session, and the panel says why.
-    expect(t.lastHud()).toEqual([
-      "Placed for this session",
-      ["Not saved: no saved anchors", AGAIN],
-    ]);
+    expect(t.lastHud()).toEqual(["Placed, not saved", ["Why: no anchors", AGAIN]]);
     expect(store.save).not.toHaveBeenCalled();
     expect(t.ar.alignmentState).toBe("kept");
     // The A button tries again, to the same end.
@@ -914,7 +911,7 @@ describe("on-site alignment: save and realign", () => {
     await expect(t.ar.saveAlignment()).resolves.toBe(false);
     expect(t.ar.alignmentState).toBe("kept");
     t.update();
-    expect(t.lastHud()?.[1][0]).toBe("Not saved: the headset did not keep it");
+    expect(t.lastHud()?.[1][0]).toBe("Why: not kept");
   });
 
   it("realign() asks for the marks again, dropping the anchors in use but not the saved ones", async () => {

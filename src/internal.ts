@@ -265,7 +265,8 @@ export interface AlignmentStore {
   /** A well-formed alignment is saved under `id` on this device (no session needed). */
   has(id: string): boolean;
   /**
-   * Replaces the saved anchors of `id` by these two (A, B); false when anything failed. `points`:
+   * Replaces the saved anchors of `id` by these two (A, B); true, or what failed in a few words
+   * (false: unknown). `points`:
    * the model points they stand for, so a restore places by them whatever points come later.
    */
   save(
@@ -274,7 +275,7 @@ export interface AlignmentStore {
     a: XRAnchor,
     b: XRAnchor,
     points?: number[],
-  ): Promise<boolean>;
+  ): Promise<boolean | string>;
   /** The two anchors saved for `id`, restored in this session, or null (none saved, or not found here). */
   restore(
     session: XRSession,

@@ -140,7 +140,7 @@ describe("createAlignmentStore", () => {
     const a = session.anchor();
     const b = session.anchor();
     b.failHandle = true;
-    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toBe(false);
+    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toBe("handle refused");
     expect(session.deletedHandles).toEqual([a.handle]);
     expect(session.persistentAnchors).not.toContain(a.handle);
     expect(storage.getItem(KEY("site"))).toBe(before);
@@ -154,7 +154,7 @@ describe("createAlignmentStore", () => {
     const store = createAlignmentStore(storage);
     const a = session.anchor();
     const b = session.anchor();
-    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toBe(false);
+    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toBe("storage full");
     expect(session.deletedHandles.sort()).toEqual([a.handle, b.handle].sort());
     expect(session.persistentAnchors).toEqual([]);
   });
@@ -230,7 +230,7 @@ describe("createAlignmentStore", () => {
     const session = new FakeSession();
     expect(
       await store.save(bare, "site", asAnchor(session.anchor()), asAnchor(session.anchor())),
-    ).toBe(false);
+    ).toBe("no anchors");
     expect(await store.restore(bare, "site")).toBeNull();
     await expect(store.forget(bare, "site")).resolves.toBeUndefined();
   });
@@ -241,7 +241,7 @@ describe("createAlignmentStore", () => {
     const store = createAlignmentStore(null);
     expect(
       await store.save(xr, "site", asAnchor(session.anchor()), asAnchor(session.anchor())),
-    ).toBe(false);
+    ).toBe("no storage");
     expect(session.persistentAnchors).toEqual([]);
     expect(await store.restore(xr, "site")).toBeNull();
     await expect(store.forget(xr, "site")).resolves.toBeUndefined();
@@ -264,7 +264,7 @@ describe("createAlignmentStore", () => {
     const store = createAlignmentStore(throwing);
     expect(
       await store.save(xr, "site", asAnchor(session.anchor()), asAnchor(session.anchor())),
-    ).toBe(false);
+    ).toBe("storage full");
     expect(session.persistentAnchors).toEqual([]);
     expect(await store.restore(xr, "site")).toBeNull();
     await expect(store.forget(xr, "site")).resolves.toBeUndefined();
