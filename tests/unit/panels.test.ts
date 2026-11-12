@@ -186,7 +186,7 @@ function specs(): PanelSpec[] {
   ];
 }
 
-function setup(options: { withMenu?: boolean; mode?: "vr" | "ar"; skipRight?: boolean } = {}) {
+function setup(options: { withMenu?: boolean; mode?: "vr" | "ar" } = {}) {
   const up = upVector("y");
   const events = new Emitter<AllEvents>();
   const root = new Group();
@@ -224,10 +224,7 @@ function setup(options: { withMenu?: boolean; mode?: "vr" | "ar"; skipRight?: bo
         otherCapture: () => panels.capturing,
       })
     : null;
-  panels = createPanels(ctx, {
-    otherCapture: () => menu?.capturing === true,
-    skipButton: (hand) => options.skipRight === true && hand === "right",
-  });
+  panels = createPanels(ctx, { otherCapture: () => menu?.capturing === true });
   menu?.start();
   panels.start();
   const inputs: KitEvents["panel-input"][] = [];
@@ -457,19 +454,14 @@ describe("panel hit-testing", () => {
 });
 
 describe("panels open, close and placement", () => {
-  it("runs in AR too; on site the right hand's button is not the panels', the left one is", () => {
-    const table = setup({ mode: "ar" });
-    table.panels.set(specs());
-    table.events.emit("menu-button", { hand: "right" });
-    expect(table.panels.isOpen).toBe(true);
-    expect(table.ctx.uiCapture).toBe(true);
-
-    const site = setup({ mode: "ar", skipRight: true });
-    site.panels.set(specs());
-    site.events.emit("menu-button", { hand: "right" });
-    expect(site.panels.isOpen).toBe(false);
-    site.events.emit("menu-button", { hand: "left" });
-    expect(site.panels.isOpen).toBe(true);
+  it("runs in AR too, on either hand's B or Y", () => {
+    const t = setup({ mode: "ar" });
+    t.panels.set(specs());
+    t.events.emit("menu-button", { hand: "right" });
+    expect(t.panels.isOpen).toBe(true);
+    expect(t.ctx.uiCapture).toBe(true);
+    t.events.emit("menu-button", { hand: "left" });
+    expect(t.panels.isOpen).toBe(false);
   });
 
   it("B or Y opens and closes the panels while any are set, and reports it", () => {

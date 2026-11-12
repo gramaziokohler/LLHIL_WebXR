@@ -139,8 +139,6 @@ export function createXRKit(options: XRKitOptions): XRKit {
   });
   const panels: PanelsController = createPanels(ctx, {
     otherCapture: () => menu.capturing,
-    // On site the right hand's B places the model again; Y, on the left, is the panels'.
-    skipButton: (hand) => ar.onSite && hand === "right",
   });
 
   const modulesFor = (mode: XRMode): KitModule[] =>
@@ -274,6 +272,12 @@ export function createXRKit(options: XRKitOptions): XRKit {
     },
     get placement() {
       return ctx.mode === "ar" ? ar.placement : null;
+    },
+    get tool() {
+      return ar.tool;
+    },
+    set tool(tool) {
+      ar.tool = tool;
     },
     setPlacement(placement) {
       if (ctx.mode === "ar") ar.setPlacement(placement);

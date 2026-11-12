@@ -122,6 +122,13 @@ export interface ARAlignment {
   start?: "marks" | "stand";
 }
 
+/**
+ * What the thumbstick does to the placed model in AR, on a table and on site: `turn` (left and
+ * right), `move` (on its plane, the way the user looks being forward) or `height` (forward up,
+ * back down). One stick and no second button is enough; the grip held is a shortcut for `move`.
+ */
+export type ARTool = "turn" | "move" | "height";
+
 /** AR on a table: where the placed model stands. */
 export interface ARPlacement {
   /** The model's base point, in scene coordinates (the session's reference space). */
@@ -436,6 +443,8 @@ export interface XRKit {
    * Resolves null when the session ends or another request replaces this one.
    */
   takePoint(): Promise<[number, number, number] | null>;
+  /** AR: what the thumbstick does to the placed model. Default `"turn"`. */
+  tool: ARTool;
   /** AR on a table: where the placed model stands, or null until it is placed. */
   readonly placement: ARPlacement | null;
   /** AR on a table: place the model (shown if it was not yet), e.g. as another device has it. */

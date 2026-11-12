@@ -4,6 +4,6 @@
     "path": "dist/index.js",
     "import": "*",
     "ignore": ["three"],
-    "limit": "26 kB"
+    "limit": "27 kB"
   }
 ]

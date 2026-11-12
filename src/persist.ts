@@ -10,6 +10,8 @@ interface SavedRecord {
   a: string;
   b: string;
   savedAt: string;
+  /** The model points the two anchors stand for (six numbers: A, then B), where the saver gave them. */
+  p?: number[];
 }
 
 export function createAlignmentStore(storage: Storage | null = safeLocalStorage()): AlignmentStore {
@@ -63,7 +65,7 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
       }
     },
 
-    async save(session, id, a, b) {
+    async save(session, id, a, b, points) {
       if (!storage || !store.supported(session)) return false;
       const previous = read(id);
       // Handles the device already knew are not ours to delete on failure: a browser may hand back
@@ -81,7 +83,13 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
         const uuidB = await requestHandle(b);
         if (!known.has(uuidB)) created.push(uuidB);
         // Write before deleting the old handles, so a failed write leaves the old alignment whole.
-        const ok = write(id, { v: 1, a: uuidA, b: uuidB, savedAt: new Date().toISOString() });
+        const ok = write(id, {
+          v: 1,
+          a: uuidA,
+          b: uuidB,
+          savedAt: new Date().toISOString(),
+          ...(points ? { p: points } : {}),
+        });
         if (!ok) return await cleanUp();
         if (previous) {
           for (const old of [previous.a, previous.b]) {
@@ -108,7 +116,7 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
           withTimeout(restore.call(session, record.b), ANCHOR_TIMEOUT_MS, "anchor restore"),
         ]);
         if (ra.status === "fulfilled" && rb.status === "fulfilled") {
-          return { a: ra.value, b: rb.value };
+          return { a: ra.value, b: rb.value, ...(record.p ? { points: record.p } : {}) };
         }
         // Drop the half that came back: a lone anchor is of no use and would keep being tracked.
         for (const r of [ra, rb]) {
@@ -144,7 +152,14 @@ function parse(raw: string): SavedRecord | null {
     if (r.v !== 1) return null;
     if (typeof r.a !== "string" || r.a === "" || typeof r.b !== "string" || r.b === "") return null;
     if (typeof r.savedAt !== "string") return null;
-    return { v: 1, a: r.a, b: r.b, savedAt: r.savedAt };
+    const p = r.p;
+    const points =
+      Array.isArray(p) &&
+      p.length === 6 &&
+      p.every((n) => typeof n === "number" && Number.isFinite(n))
+        ? (p as number[])
+        : undefined;
+    return { v: 1, a: r.a, b: r.b, savedAt: r.savedAt, ...(points ? { p: points } : {}) };
   } catch {
     return null;
   }

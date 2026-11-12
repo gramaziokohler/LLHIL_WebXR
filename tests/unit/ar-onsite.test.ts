@@ -187,8 +187,8 @@ const ALIGNMENT: ARAlignment = {
 };
 const REAL_A = new Vector3(1, 0, 1);
 const REAL_B = new Vector3(5, 0, 1);
-const HINTS = ["Right stick: turn", "Grip + right stick: move", "Left stick: height · Y: menu"];
-const AGAIN = "B: place again · Y: menu";
+const HINTS = ["Stick: turn", "Menu: B or Y"];
+const AGAIN = "Menu: B or Y";
 
 interface SetupOptions {
   model?: Object3D | "scene";
@@ -369,7 +369,7 @@ describe("on-site alignment: picking", () => {
 
     t.update();
     expect(t.reticle()!.visible).toBe(false);
-    expect(t.lastHud()).toEqual(["Aligned, error 0.0 cm", HINTS]);
+    expect(t.lastHud()).toEqual(["Adjust, then save, error 0.0 cm", HINTS]);
     expect(t.states).toEqual([
       { state: "pick-a", errorM: null, restored: false },
       { state: "pick-b", errorM: null, restored: false },
@@ -384,7 +384,7 @@ describe("on-site alignment: picking", () => {
     const last = t.states.at(-1)!;
     expect(last.state).toBe("aligned");
     expect(last.errorM).toBeCloseTo(0.02, 9);
-    expect(t.lastHud()?.[0]).toBe("Aligned, error 2.0 cm");
+    expect(t.lastHud()?.[0]).toBe("Adjust, then save, error 2.0 cm");
   });
 
   it("aligns a millimetre model at 1:1", async () => {
@@ -602,7 +602,7 @@ describe("on-site alignment: fine-tune", () => {
     near(t.mapped(ALIGNMENT.b), REAL_B.clone().add(new Vector3(-0.05, 0, -0.05)));
   });
 
-  it("start: stand places A under the head and B ahead of it, with no marks; B places again", async () => {
+  it("start: stand places A under the head and B ahead of it, with no marks; realign() places again", async () => {
     const t = setup();
     const pose = (x: number, z: number, yawDeg: number) => ({
       transform: {
@@ -622,11 +622,9 @@ describe("on-site alignment: fine-tune", () => {
     expect(t.ar.alignmentState).toBe("aligned");
     near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
     near(t.mapped(ALIGNMENT.b), new Vector3(-2, 0, 3));
-    // B (re-align): from where the user stands now.
+    // Placing again (the host's menu row): from where the user stands now.
     viewer = pose(0, 0, 0);
-    const ray = gamepadRay("r");
-    t.rays.push(ray);
-    (ray.gamepad as any).buttons[5].pressed = true;
+    t.ar.realign();
     t.update();
     // Placed on the next frame.
     t.update();
@@ -682,22 +680,64 @@ describe("on-site alignment: fine-tune", () => {
     expect(new Vector3(...refined.a).distanceTo(new Vector3(...ALIGNMENT.a))).toBeGreaterThan(0.2);
   });
 
-  it("lifts and lowers the model with the left stick, and with nudge({ lift })", async () => {
+  it("lifts and lowers the model with the trigger held and the stick, on either hand, and with nudge({ lift })", async () => {
     const t = setup();
     await t.start();
     await t.pick();
     const right = gamepadRay("r");
     const left = gamepadRay("l", "left");
     t.rays.push(right, left);
-    // Forward on the left stick (negative): up, 0.2 m/s at full deflection.
-    (left.gamepad as any).axes[3] = -1;
+    // Trigger held, stick forward (negative): up, 0.2 m/s at full deflection.
+    (right.gamepad as any).buttons[0].pressed = true;
+    (right.gamepad as any).axes[3] = -1;
     t.update(0.1);
     near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(0, 0.02, 0)));
     near(t.mapped(ALIGNMENT.b), REAL_B.clone().add(new Vector3(0, 0.02, 0)));
+    (right.gamepad as any).buttons[0].pressed = false;
+    (right.gamepad as any).axes[3] = 0;
+    // The left hand's does the same, the other way.
+    (left.gamepad as any).buttons[0].pressed = true;
+    (left.gamepad as any).axes[3] = 1;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.a), REAL_A);
+    (left.gamepad as any).buttons[0].pressed = false;
     (left.gamepad as any).axes[3] = 0;
+    // Without the trigger the stick's forward and back does nothing.
+    (right.gamepad as any).axes[3] = -1;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.a), REAL_A);
+    (right.gamepad as any).axes[3] = 0;
     t.ar.nudge({ lift: -0.05 });
-    near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(0, -0.03, 0)));
+    near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(0, -0.05, 0)));
     expect(t.ar.alignmentState).toBe("aligned");
+  });
+
+  it("one stick does it all: the tool says what it drives (turn, move, height)", async () => {
+    const t = setup();
+    await t.start();
+    await t.pick();
+    const ray = gamepadRay("l", "left");
+    t.rays.push(ray);
+    const axes = (ray.gamepad as any).axes as number[];
+    expect(t.ar.tool).toBe("turn");
+    // Height: forward (negative) is up, 0.2 m/s at full deflection.
+    t.ar.tool = "height";
+    axes[3] = -1;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(0, 0.02, 0)));
+    // Move: the head looks along -Z, so forward is -Z and right is +X; no grip needed.
+    t.ar.tool = "move";
+    axes[2] = 1;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(0.05, 0.02, -0.05)));
+    t.update();
+    expect(t.lastHud()).toEqual([
+      "Adjust, then save, error 0.0 cm",
+      ["Stick: move", "Menu: B or Y"],
+    ]);
+    // Not a tool: ignored.
+    (t.ar as any).tool = "spin";
+    expect(t.ar.tool).toBe("move");
   });
 
   it("nudge() turns about A and moves in the user's frame", async () => {
@@ -770,7 +810,14 @@ describe("on-site alignment: save and realign", () => {
     press(t, ray, 4);
     await flush();
     expect(store.save).toHaveBeenCalledTimes(1);
-    expect(store.save).toHaveBeenCalledWith(t.session, "poi-7", anchors[0], anchors[1]);
+    expect(store.save).toHaveBeenCalledWith(
+      t.session,
+      "poi-7",
+      anchors[0],
+      anchors[1],
+      // The model points the anchors stand for.
+      [...ALIGNMENT.a, ...ALIGNMENT.b],
+    );
     expect(t.ar.alignmentState).toBe("saved");
     expect(t.states.at(-1)).toEqual({ state: "saved", errorM: 0, restored: false });
     t.update();
@@ -802,6 +849,7 @@ describe("on-site alignment: save and realign", () => {
       "poi-7",
       t.frame.created[0].anchor,
       t.frame.created[1].anchor,
+      [...ALIGNMENT.a, ...ALIGNMENT.b],
     );
     expect(t.ar.alignmentState).toBe("saved");
     // The pick anchors are replaced and deleted; the saved ones stay.
@@ -849,7 +897,7 @@ describe("on-site alignment: save and realign", () => {
     expect(t.lastHud()?.[1][0]).toBe("Not saved: the headset did not keep it");
   });
 
-  it("realigns on the B button, dropping the anchors in use but not the saved ones", async () => {
+  it("realign() asks for the marks again, dropping the anchors in use but not the saved ones", async () => {
     store.supported.mockReturnValue(true);
     const t = setup();
     await t.start();
@@ -858,7 +906,10 @@ describe("on-site alignment: save and realign", () => {
     await t.pick(REAL_A, REAL_B, anchors);
     const ray = gamepadRay("l", "left");
     t.rays.push(ray);
+    // B and Y are the host's menu now: placing again is the host's call.
     press(t, ray, 5);
+    expect(t.ar.alignmentState).toBe("aligned");
+    t.ar.realign();
     expect(t.ar.alignmentState).toBe("pick-a");
     expect(t.model.visible).toBe(false);
     for (const a of anchors) expect(a.delete).toHaveBeenCalledTimes(1);

@@ -14,7 +14,7 @@ import { nudgeMatrix, solveTwoPoint } from "./align";
 import type { ARController, KitContext, RaySource } from "./internal";
 import { forwardAtYawZero } from "./math";
 import { createAlignmentStore } from "./persist";
-import type { AlignmentNudge, AlignmentState, ARAlignment, ARPlacement } from "./types";
+import type { AlignmentNudge, AlignmentState, ARAlignment, ARPlacement, ARTool } from "./types";
 import { ANCHOR_TIMEOUT_MS, withTimeout } from "./timeout";
 
 const DEG = Math.PI / 180;
@@ -26,7 +26,8 @@ const TOUCH_HEIGHT = 0.4;
 const TOUCH_MIN_SPAN = 0.5;
 /** A hit this close to a controller (metres) is the hand holding it. */
 const HAND_CLEARANCE = 0.3;
-/** xr-standard gamepad: the grip (squeeze). */
+/** xr-standard gamepad: the trigger, and the grip (squeeze). */
+const BUTTON_TRIGGER = 0;
 const BUTTON_GRIP = 1;
 /** Anchor drift below this (squared metres) is not worth recomputing the model's matrices. */
 const ANCHOR_EPSILON_SQ = 1e-8;
@@ -41,14 +42,8 @@ const RESTORE_TIMEOUT_S = 3;
 const LOST_HOLD_S = 1.5;
 /** xr-standard gamepad buttons: A/X saves, B/Y aligns again. */
 const BUTTON_SAVE = 4;
-const BUTTON_REALIGN = 5;
 /** The panel's lines are short: a headset cuts what does not fit its width. */
-const ADJUST_HINTS = [
-  "Right stick: turn",
-  "Grip + right stick: move",
-  "Left stick: height · Y: menu",
-];
-const AGAIN_HINT = "B: place again · Y: menu";
+const MENU_HINT = "Menu: B or Y";
 
 /** `aiming`: never placed this session; `replacing`: placed, but the reticle is back for a new spot. */
 type Phase = "aiming" | "placed" | "replacing";
@@ -156,6 +151,10 @@ export function createAR(ctx: KitContext): ARController {
   let pendingSave: { resolve: (ok: boolean) => void; promise: Promise<boolean> } | null = null;
   /** `stand`: place from the head on the next frame that has its pose. */
   let wantStand = false;
+  /** What the thumbstick does to the placed model. */
+  let tool: ARTool = "turn";
+  /** The trigger held now moved the height: its release is not a touch of a floor mark. */
+  let liftHeld = false;
   /** Why the last save could not be kept on the device (the `kept` state's panel says it). */
   let keptWhy = "";
   const isPlaced = () => state === "aligned" || state === "saved" || state === "kept";
@@ -428,24 +427,32 @@ export function createAR(ctx: KitContext): ARController {
       const four = axes.length >= 4;
       const x = stick((four ? axes[2] : axes[0]) ?? 0);
       const y = stick((four ? axes[3] : axes[1]) ?? 0);
-      if (ray.gamepad.buttons?.[BUTTON_GRIP]?.pressed) {
-        if (!x && !y) continue;
-        const world = ctx.renderer.xr.getCamera().matrixWorld;
-        v1.setFromMatrixColumn(world, 2).negate();
-        v1.addScaledVector(ctx.up, -v1.dot(ctx.up));
-        if (v1.lengthSq() < 1e-6) continue;
-        v1.normalize();
-        v2.crossVectors(v1, ctx.up);
-        const k = ctx.options.ar.moveSpeed * dt;
-        // Forward on the stick is negative.
-        v2.multiplyScalar(x * k).addScaledVector(v1, -y * k);
+      if (!x && !y) continue;
+      // The grip held is a shortcut for the move tool.
+      const use = ray.gamepad.buttons?.[BUTTON_GRIP]?.pressed ? "move" : tool;
+      const k = ctx.options.ar.moveSpeed * dt;
+      if (use === "turn") {
+        if (!x) continue;
+        // Pushing right turns the model clockwise seen from above.
+        turn -= x * ctx.options.ar.rotateSpeed * DEG * dt;
+      } else {
+        if (use === "move") {
+          const world = ctx.renderer.xr.getCamera().matrixWorld;
+          v1.setFromMatrixColumn(world, 2).negate();
+          v1.addScaledVector(ctx.up, -v1.dot(ctx.up));
+          if (v1.lengthSq() < 1e-6) continue;
+          v1.normalize();
+          v2.crossVectors(v1, ctx.up);
+          // Forward on the stick is negative.
+          v2.multiplyScalar(x * k).addScaledVector(v1, -y * k);
+        } else {
+          if (!y) continue;
+          v2.copy(ctx.up).multiplyScalar(-y * k);
+        }
         placedPoint.add(v2);
         // The anchor keeps holding the model, from its new spot.
         anchorOffset.add(v2);
-      } else if (x) {
-        // Pushing right turns the model clockwise seen from above.
-        turn -= x * ctx.options.ar.rotateSpeed * DEG * dt;
-      } else continue;
+      }
       moved = true;
     }
     if (moved) applyPlacement();
@@ -544,14 +551,13 @@ export function createAR(ctx: KitContext): ARController {
   }
 
   function placedHud(): void {
-    const stand = onsite?.start === "stand";
-    const error = stand ? "" : `, error ${cm(errorM)}`;
+    const error = onsite?.start === "stand" ? "" : `, error ${cm(errorM)}`;
     if (state === "saved") {
-      showHud(`${restored ? "Restored" : "Saved"}${error}`, [AGAIN_HINT]);
+      showHud(`${restored ? "Restored" : "Saved"}${error}`, [MENU_HINT]);
     } else if (state === "kept") {
-      showHud("Placed for this session", [`Not saved: ${keptWhy}`, AGAIN_HINT]);
+      showHud("Placed for this session", [`Not saved: ${keptWhy}`, MENU_HINT]);
     } else {
-      showHud(stand ? "A: save · B: place again" : `Aligned${error}`, ADJUST_HINTS);
+      showHud(`Adjust, then save${error}`, [`Stick: ${tool}`, MENU_HINT]);
     }
   }
 
@@ -625,7 +631,7 @@ export function createAR(ctx: KitContext): ARController {
     }
     setState("restoring");
     const token = pickToken;
-    let request: Promise<{ a: XRAnchor; b: XRAnchor } | null>;
+    let request: Promise<{ a: XRAnchor; b: XRAnchor; points?: number[] } | null>;
     try {
       request = store.restore(s, alignment.id);
     } catch (error) {
@@ -640,6 +646,10 @@ export function createAR(ctx: KitContext): ARController {
         }
         persistent.add(r.a);
         persistent.add(r.b);
+        if (r.points) {
+          modelA.fromArray(r.points, 0);
+          modelB.fromArray(r.points, 3);
+        }
         restoredAnchors = r;
         restoreClock = 0;
       },
@@ -816,6 +826,9 @@ export function createAR(ctx: KitContext): ARController {
    * better). Controller tracking is the headset's most exact measure, and needs no camera.
    */
   function touchMark(ray: RaySource): void {
+    const lifted = liftHeld;
+    liftHeld = false;
+    if (lifted) return;
     if (ray.kind !== "controller" || (!isPlaced() && !wantStand)) {
       return;
     }
@@ -902,26 +915,21 @@ export function createAR(ctx: KitContext): ARController {
 
   function updateGamepads(dt: number): void {
     const controllers = ctx.input.rays().filter((r) => r.kind === "controller" && r.gamepad);
-    const rights = controllers.filter((r) => r.handedness === "right");
-    const sticks = rights.length > 0 ? rights : controllers.slice(0, 1);
-    // Save and place again are the right hand's (the left Y opens the side panels); any hand's
-    // where there is no right one.
-    for (const ray of rights.length > 0 ? rights : controllers) {
-      const buttons = ray.gamepad?.buttons ?? [];
-      for (const index of [BUTTON_SAVE, BUTTON_REALIGN]) {
-        const key = `${ray.id}:${index}`;
-        const down = !!buttons[index]?.pressed;
-        const was = pressed.get(key) ?? false;
-        pressed.set(key, down);
-        if (!down || was) continue;
-        if (index === BUTTON_SAVE) void saveAlignment();
-        else realign();
-      }
+    // A or X saves, on either hand: a shortcut for the host's Save (B and Y open its panels).
+    for (const ray of controllers) {
+      const key = `${ray.id}:${BUTTON_SAVE}`;
+      const down = !!ray.gamepad?.buttons?.[BUTTON_SAVE]?.pressed;
+      const was = pressed.get(key) ?? false;
+      pressed.set(key, down);
+      if (down && !was && !ctx.uiCapture) void saveAlignment();
     }
     // A panel has the controllers: the sticks are the panel's.
     if (!isPlaced() || ctx.uiCapture) return;
-    for (const ray of sticks) {
-      const axes = ray.gamepad?.axes ?? [];
+    // Either hand's stick drives the tool; the grip held is a shortcut for move, the trigger held
+    // for height (forward on the stick is negative).
+    for (const ray of controllers) {
+      const pad = ray.gamepad;
+      const axes = pad?.axes ?? [];
       // xr-standard mapping: the thumbstick is axes 2 and 3; a lone stick reports 0 and 1.
       const four = axes.length >= 4;
       // Squared: a light push is a fine correction.
@@ -930,17 +938,19 @@ export function createAR(ctx: KitContext): ARController {
       const sx = x * Math.abs(x);
       const sy = y * Math.abs(y);
       const k = NUDGE_MOVE_M_S * dt;
-      // With the grip: slide (forward on the stick is negative). Without: right turns clockwise.
-      if (ray.gamepad?.buttons?.[BUTTON_GRIP]?.pressed) applyNudge(0, sx * k, -sy * k);
+      const held = pad?.buttons?.[BUTTON_TRIGGER]?.pressed
+        ? "height"
+        : pad?.buttons?.[BUTTON_GRIP]?.pressed
+          ? "move"
+          : null;
+      const use = held ?? tool;
+      if (use === "height") {
+        if (!sy) continue;
+        // This pull was for the height: its release touches no floor mark.
+        if (held) liftHeld = true;
+        applyNudge(0, 0, 0, -sy * NUDGE_LIFT_M_S * dt);
+      } else if (use === "move") applyNudge(0, sx * k, -sy * k);
       else applyNudge(-sx * NUDGE_TURN_DEG_S * dt, 0, 0);
-    }
-    // The other hand's stick, forward and back: the model up and down, onto the real floor.
-    if (rights.length === 0) return;
-    for (const ray of controllers) {
-      if (ray.handedness !== "left") continue;
-      const axes = ray.gamepad?.axes ?? [];
-      const y = stick((axes.length >= 4 ? axes[3] : axes[1]) ?? 0);
-      applyNudge(0, 0, 0, -y * Math.abs(y) * NUDGE_LIFT_M_S * dt);
     }
   }
 
@@ -1064,7 +1074,9 @@ export function createAR(ctx: KitContext): ARController {
     const rev = revision;
     let ok = false;
     try {
-      ok = await store.save(s, alignment.id, a, b);
+      // With the model points the anchors stand for: a restore places by them, whatever points
+      // the next session's alignment carries.
+      ok = await store.save(s, alignment.id, a, b, [...modelA.toArray(), ...modelB.toArray()]);
     } catch (error) {
       console.warn("[llhil-webxr] the alignment could not be saved", error);
       ok = false;
@@ -1150,6 +1162,14 @@ export function createAR(ctx: KitContext): ARController {
     },
     get onSite() {
       return active && onsite !== null;
+    },
+    get tool(): ARTool {
+      return tool;
+    },
+    set tool(next: ARTool) {
+      if (next !== "turn" && next !== "move" && next !== "height") return;
+      tool = next;
+      if (active && onsite && state === "aligned") placedHud();
     },
     takePoint(): Promise<[number, number, number] | null> {
       pointTaker?.(null);

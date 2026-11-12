@@ -296,8 +296,6 @@ interface RayState {
 export interface PanelsDeps {
   /** Another UI (the menu) holds `uiCapture` too, so the panels do not release it. */
   otherCapture?: () => boolean;
-  /** This hand's B or Y is taken (AR on site: the right one places the model again). */
-  skipButton?: (hand: "left" | "right") => boolean;
 }
 
 export function createPanels(ctx: KitContext, deps: PanelsDeps = {}): PanelsController {
@@ -992,8 +990,7 @@ export function createPanels(ctx: KitContext, deps: PanelsDeps = {}): PanelsCont
       running = ctx.mode !== null;
       if (!running) return;
       unsubscribe = [
-        ctx.events.on("menu-button", ({ hand }) => {
-          if (deps.skipButton?.(hand)) return;
+        ctx.events.on("menu-button", () => {
           if (panels.length > 0) (open ? closePanels : openPanels)();
         }),
         ctx.events.on("selectstart", onSelectStart),

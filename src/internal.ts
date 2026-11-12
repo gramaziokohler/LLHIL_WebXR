@@ -11,6 +11,7 @@ import type { Emitter } from "./events";
 import type { UiTheme } from "./theme";
 import type {
   ARPlacement,
+  ARTool,
   AlignmentNudge,
   AlignmentState,
   ARAlignment,
@@ -238,6 +239,7 @@ export interface ARController extends KitModule {
   takePoint(): Promise<[number, number, number] | null>;
   readonly placement: ARPlacement | null;
   setPlacement(placement: ARPlacement): void;
+  tool: ARTool;
 }
 
 /** Result of the two-point solve (src/align.ts). */
@@ -262,10 +264,22 @@ export interface AlignmentStore {
   supported(session: XRSession): boolean;
   /** A well-formed alignment is saved under `id` on this device (no session needed). */
   has(id: string): boolean;
-  /** Replaces the saved anchors of `id` by these two (A, B); false when anything failed. */
-  save(session: XRSession, id: string, a: XRAnchor, b: XRAnchor): Promise<boolean>;
+  /**
+   * Replaces the saved anchors of `id` by these two (A, B); false when anything failed. `points`:
+   * the model points they stand for, so a restore places by them whatever points come later.
+   */
+  save(
+    session: XRSession,
+    id: string,
+    a: XRAnchor,
+    b: XRAnchor,
+    points?: number[],
+  ): Promise<boolean>;
   /** The two anchors saved for `id`, restored in this session, or null (none saved, or not found here). */
-  restore(session: XRSession, id: string): Promise<{ a: XRAnchor; b: XRAnchor } | null>;
+  restore(
+    session: XRSession,
+    id: string,
+  ): Promise<{ a: XRAnchor; b: XRAnchor; points?: number[] } | null>;
   /** Deletes the saved anchors of `id` (from the device and from storage). */
   forget(session: XRSession | null, id: string): Promise<void>;
 }

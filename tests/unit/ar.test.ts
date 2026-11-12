@@ -517,6 +517,26 @@ describe("createAR", () => {
     expect(t.ar.rotation).toBeCloseTo(90, 9);
   });
 
+  it("on a table the tool drives the stick too: move without the grip, height up and down", async () => {
+    const t = setup();
+    t.ar.setScale(1);
+    await t.start();
+    const hit = new Vector3(2, 0, 2);
+    t.hitAt(hit);
+    t.select();
+    const ray = controllerRay("c0", 1);
+    t.rays.push(ray);
+    t.ar.tool = "move";
+    t.ar.update(t.frame as unknown as XRFrame, 1);
+    expect(baseOf(t.model).distanceTo(new Vector3(2.3, 0, 2))).toBeLessThan(1e-6);
+    t.ar.tool = "height";
+    (ray.gamepad as any).axes[2] = 0;
+    (ray.gamepad as any).axes[3] = -1;
+    t.ar.update(t.frame as unknown as XRFrame, 1);
+    expect(baseOf(t.model).distanceTo(new Vector3(2.3, 0.3, 2))).toBeLessThan(1e-6);
+    t.ar.tool = "turn";
+  });
+
   it("does not turn before the model is placed", async () => {
     const t = setup();
     await t.start();
