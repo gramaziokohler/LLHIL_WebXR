@@ -19,14 +19,14 @@ import { applyLetterSpacing, DEFAULT_THEME, fillBackground, fontOf, type UiTheme
 import type { KitEvents, PanelRow, PanelSide, PanelSpec } from "./types";
 
 /** Panel width in metres; the canvas is PANEL_CANVAS_WIDTH px across it. */
-export const PANEL_WIDTH = 0.5;
+export const PANEL_WIDTH = 0.62;
 export const PANEL_CANVAS_WIDTH = 1024;
 /** Metres per canvas pixel. */
 export const PANEL_MPP = PANEL_WIDTH / PANEL_CANVAS_WIDTH;
 /** Distance of each panel from the eye, metres. */
-export const PANEL_DISTANCE = 0.75;
+export const PANEL_DISTANCE = 1.1;
 /** Drop of the panel centres below eye height, metres. */
-export const PANEL_DROP = 0.3;
+export const PANEL_DROP = 0.12;
 /** Degrees left and right of the panels' forward. */
 export const PANEL_ANGLE = 40;
 /** Degrees each panel leans back. */
@@ -349,7 +349,11 @@ export function createPanels(ctx: KitContext, deps: PanelsDeps = {}): PanelsCont
     if (existing) return existing;
     const surface = createCanvas(PANEL_CANVAS_WIDTH, 2);
     const texture = surface ? new CanvasTexture(surface.canvas as HTMLCanvasElement) : null;
-    if (texture) texture.colorSpace = SRGBColorSpace;
+    if (texture) {
+      texture.colorSpace = SRGBColorSpace;
+      // Seen at an angle, to the side of the view: without this the text blurs.
+      texture.anisotropy = 8;
+    }
     const material = new MeshBasicMaterial({
       map: texture,
       transparent: true,

@@ -555,7 +555,8 @@ export function createAR(ctx: KitContext): ARController {
     if (state === "saved") {
       showHud(`${restored ? "Restored" : "Saved"}${error}`, [MENU_HINT]);
     } else if (state === "kept") {
-      showHud("Placed, not saved", [`Why: ${keptWhy}`, MENU_HINT]);
+      // The short reason here; all of it in alignmentNote, for a host with room to show it.
+      showHud("Placed, not saved", [`Why: ${keptWhy.split(":")[0]}`, MENU_HINT]);
     } else {
       showHud(`Adjust, then save${error}`, [`Stick: ${tool}`, MENU_HINT]);
     }
@@ -1165,6 +1166,9 @@ export function createAR(ctx: KitContext): ARController {
     },
     get onSite() {
       return active && onsite !== null;
+    },
+    get alignmentNote() {
+      return active && state === "kept" ? keptWhy : null;
     },
     get tool(): ARTool {
       return tool;

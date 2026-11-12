@@ -140,7 +140,7 @@ describe("createAlignmentStore", () => {
     const a = session.anchor();
     const b = session.anchor();
     b.failHandle = true;
-    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toBe("handle refused");
+    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toMatch(/^handle refused: /);
     expect(session.deletedHandles).toEqual([a.handle]);
     expect(session.persistentAnchors).not.toContain(a.handle);
     expect(storage.getItem(KEY("site"))).toBe(before);

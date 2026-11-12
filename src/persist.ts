@@ -100,9 +100,11 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
           }
         }
         return true;
-      } catch {
+      } catch (error) {
         await cleanUp();
-        return "handle refused";
+        // What the headset said, after the colon: the only way to learn it without a console.
+        const said = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+        return `handle refused: ${said}`.slice(0, 200);
       }
     },
 

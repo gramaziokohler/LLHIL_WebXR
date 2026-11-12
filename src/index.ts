@@ -264,6 +264,9 @@ export function createXRKit(options: XRKitOptions): XRKit {
     get alignmentMarks() {
       return ctx.mode === "ar" ? ar.alignmentMarks : null;
     },
+    get alignmentNote() {
+      return ctx.mode === "ar" ? ar.alignmentNote : null;
+    },
     rebaseAlignment(alignment) {
       if (ctx.mode === "ar") ar.rebaseAlignment(alignment);
     },

@@ -458,6 +458,11 @@ export interface XRKit {
   /** The on-site alignment state, or null outside an on-site AR session. */
   readonly alignmentState: AlignmentState | null;
   /**
+   * AR on site, in the `kept` state: why the device could not save the alignment, with what the
+   * device said where it said something; else null.
+   */
+  readonly alignmentNote: string | null;
+  /**
    * Changes the VR locomotion, now or for the next session; emits `locomotion` when the mode
    * changes. Invalid values are ignored with a warning.
    */

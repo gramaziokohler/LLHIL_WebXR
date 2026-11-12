@@ -113,8 +113,8 @@ test("B opens the side panels left and right of the user, not the menu", async (
       return [...g.matrixWorld.elements.slice(12, 15)];
     }, side);
     const dx = c[0] - position[0];
-    expect(Math.hypot(dx, c[2] - position[2])).toBeCloseTo(0.75, 1);
-    expect(c[1]).toBeCloseTo(position[1] - 0.3, 1);
+    expect(Math.hypot(dx, c[2] - position[2])).toBeCloseTo(1.1, 1);
+    expect(c[1]).toBeCloseTo(position[1] - 0.12, 1);
     // The emulator's head looks along -Z: left is -X.
     expect(Math.sign(dx)).toBe(side === "left" ? -1 : 1);
   }
@@ -147,7 +147,7 @@ test("a viewpoint action on the right panel moves the user there", async ({ page
     g.updateWorldMatrix(true, false);
     return [...g.matrixWorld.elements.slice(12, 15)];
   });
-  expect(Math.hypot(right[0] - position[0], right[2] - position[2])).toBeCloseTo(0.75, 1);
+  expect(Math.hypot(right[0] - position[0], right[2] - position[2])).toBeCloseTo(1.1, 1);
 });
 
 test("dragging the Scale slider reports rising values, then a final one", async ({ page }) => {

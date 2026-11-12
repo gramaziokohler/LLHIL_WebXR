@@ -813,13 +813,13 @@ describe("panel sliders", () => {
     const t = opened();
     const ray = makeRay();
     t.rays.push(ray);
-    onTrack(t, ray, 0.5);
+    onTrack(t, ray, 0.6);
     recorder.reset();
     t.trigger(ray);
-    // 0.5 + 0.5 * 1.5 = 1.25, snapped to a step of 0.1.
-    expect(t.inputs.map((e) => e.value)).toEqual([1.3, 1.3]);
+    // 0.5 + 0.6 * 1.5 = 1.4, on a step of 0.1 (not a half step, which rounds either way).
+    expect(t.inputs.map((e) => e.value)).toEqual([1.4, 1.4]);
     expect(t.inputs.map((e) => e.final)).toEqual([false, true]);
-    expect(t.labels()).toContain("x1.3");
+    expect(t.labels()).toContain("x1.4");
   });
 
   it("stick left/right on a hovered slider steps it", () => {
