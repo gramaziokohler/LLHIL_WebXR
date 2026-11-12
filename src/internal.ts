@@ -10,6 +10,7 @@ import type {
 import type { Emitter } from "./events";
 import type { UiTheme } from "./theme";
 import type {
+  ARPlacement,
   AlignmentNudge,
   AlignmentState,
   ARAlignment,
@@ -234,6 +235,9 @@ export interface ARController extends KitModule {
   readonly onSite: boolean;
   readonly alignmentMarks: Pick<ARAlignment, "a" | "b"> | null;
   rebaseAlignment(alignment: ARAlignment): void;
+  takePoint(): Promise<[number, number, number] | null>;
+  readonly placement: ARPlacement | null;
+  setPlacement(placement: ARPlacement): void;
 }
 
 /** Result of the two-point solve (src/align.ts). */

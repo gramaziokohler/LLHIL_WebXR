@@ -122,6 +122,16 @@ export interface ARAlignment {
   start?: "marks" | "stand";
 }
 
+/** AR on a table: where the placed model stands. */
+export interface ARPlacement {
+  /** The model's base point, in scene coordinates (the session's reference space). */
+  point: [number, number, number];
+  /** Its turn about up, degrees (positive turns left seen from above). */
+  rotation: number;
+  /** Its scale factor (1 = 1:1). */
+  scale: number;
+}
+
 /**
  * Where the on-site alignment stands. `restoring`: looking for an alignment saved on this device;
  * `pick-a` / `pick-b`: waiting for the user to point at a mark; `aligned`: placed, not yet saved;
@@ -412,6 +422,16 @@ export interface XRKit {
    * same placement. The model stays where it is; a saved state turns `aligned`, to be saved anew.
    */
   rebaseAlignment(alignment: ARAlignment): void;
+  /**
+   * AR: the position of the controller whose trigger is pulled next (scene coordinates), for a
+   * host that measures real points, e.g. two marks on a table. That pull does nothing else.
+   * Resolves null when the session ends or another request replaces this one.
+   */
+  takePoint(): Promise<[number, number, number] | null>;
+  /** AR on a table: where the placed model stands, or null until it is placed. */
+  readonly placement: ARPlacement | null;
+  /** AR on a table: place the model (shown if it was not yet), e.g. as another device has it. */
+  setPlacement(placement: ARPlacement): void;
   /** The on-site alignment state, or null outside an on-site AR session. */
   readonly alignmentState: AlignmentState | null;
   /**

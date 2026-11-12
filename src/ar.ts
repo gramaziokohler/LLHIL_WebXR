@@ -14,7 +14,7 @@ import { nudgeMatrix, solveTwoPoint } from "./align";
 import type { ARController, KitContext, RaySource } from "./internal";
 import { forwardAtYawZero } from "./math";
 import { createAlignmentStore } from "./persist";
-import type { AlignmentNudge, AlignmentState, ARAlignment } from "./types";
+import type { AlignmentNudge, AlignmentState, ARAlignment, ARPlacement } from "./types";
 import { ANCHOR_TIMEOUT_MS, withTimeout } from "./timeout";
 
 const DEG = Math.PI / 180;
@@ -78,6 +78,8 @@ export function createAR(ctx: KitContext): ARController {
   let generation = 0;
   let session: XRSession | null = null;
   let phase: Phase = "aiming";
+  /** A host waits for the next trigger pull of a controller (takePoint). */
+  let pointTaker: ((point: [number, number, number] | null) => void) | null = null;
 
   // What is transformed: the model, or the group standing in for the scene.
   let target: Object3D | null = null;
@@ -216,8 +218,16 @@ export function createAR(ctx: KitContext): ARController {
   }
 
   function onSelectEnd({ ray }: { ray: RaySource }): void {
+    if (!active) return;
+    // A host asked for a controller's position (takePoint): this pull is its answer.
+    if (pointTaker && ray.kind === "controller") {
+      const give = pointTaker;
+      pointTaker = null;
+      give([ray.origin.x, ray.origin.y, ray.origin.z]);
+      return;
+    }
     // A trigger a panel took is the panel's.
-    if (!active || ctx.uiCapture) return;
+    if (ctx.uiCapture) return;
     if (ray.handedness !== "none") preferredHand = ray.handedness;
     if (onsite) {
       if (onsite.start === "stand") touchMark(ray);
@@ -1099,6 +1109,8 @@ export function createAR(ctx: KitContext): ARController {
     hasHit = false;
     hitResult = null;
     phase = "aiming";
+    pointTaker?.(null);
+    pointTaker = null;
     session = null;
   }
 
@@ -1124,6 +1136,31 @@ export function createAR(ctx: KitContext): ARController {
     },
     get onSite() {
       return active && onsite !== null;
+    },
+    takePoint(): Promise<[number, number, number] | null> {
+      pointTaker?.(null);
+      pointTaker = null;
+      if (!active) return Promise.resolve(null);
+      return new Promise((resolve) => {
+        pointTaker = resolve;
+      });
+    },
+    /** Table-top: where the placed model stands (its base point, turn in degrees, scale); null until placed. */
+    get placement(): ARPlacement | null {
+      if (!active || onsite || phase === "aiming") return null;
+      return { point: [placedPoint.x, placedPoint.y, placedPoint.z], rotation: turn / DEG, scale };
+    },
+    setPlacement(p: ARPlacement): void {
+      if (!active || onsite || !target) return;
+      if (p.scale > 0 && Number.isFinite(p.scale)) scale = p.scale;
+      if (Number.isFinite(p.rotation)) turn = p.rotation * DEG;
+      placedPoint.fromArray(p.point);
+      phase = "placed";
+      reticle.visible = false;
+      target.visible = true;
+      // Placed by the host, not on a hit: no anchor holds it.
+      dropAnchor();
+      applyPlacement();
     },
     get alignmentMarks() {
       return active ? marksAlignment() : null;

@@ -269,6 +269,15 @@ export function createXRKit(options: XRKitOptions): XRKit {
     rebaseAlignment(alignment) {
       if (ctx.mode === "ar") ar.rebaseAlignment(alignment);
     },
+    takePoint() {
+      return ctx.mode === "ar" ? ar.takePoint() : Promise.resolve(null);
+    },
+    get placement() {
+      return ctx.mode === "ar" ? ar.placement : null;
+    },
+    setPlacement(placement) {
+      if (ctx.mode === "ar") ar.setPlacement(placement);
+    },
     get alignmentState() {
       return ctx.mode === "ar" ? ar.alignmentState : null;
     },

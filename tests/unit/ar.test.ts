@@ -487,6 +487,36 @@ describe("createAR", () => {
     expect(baseOf(t.model).distanceTo(table)).toBeLessThan(1e-9);
   });
 
+  it("takePoint gives the controller's position on its next trigger pull, which does nothing else", async () => {
+    const t = setup();
+    await t.start();
+    t.hitAt(new Vector3(1, 0.7, -1));
+    const asked = t.ar.takePoint();
+    const ray = controllerRay("c0", 0);
+    ray.origin.set(0.3, 0.72, -0.5);
+    // A tap is not a controller: it places as usual and the request waits.
+    t.select();
+    expect(t.model.visible).toBe(true);
+    t.select(ray);
+    expect(await asked).toEqual([0.3, 0.72, -0.5]);
+    // The pull was the request's: no new spot was asked for.
+    expect(t.reticle()!.visible).toBe(false);
+    const dropped = t.ar.takePoint();
+    t.stop();
+    expect(await dropped).toBe(null);
+  });
+
+  it("placement reads where the model stands; setPlacement puts it there, shown", async () => {
+    const t = setup();
+    await t.start();
+    expect(t.ar.placement).toBe(null);
+    t.ar.setPlacement({ point: [1, 0.7, -2], rotation: 90, scale: 0.02 });
+    expect(t.model.visible).toBe(true);
+    expect(baseOf(t.model).distanceTo(new Vector3(1, 0.7, -2))).toBeLessThan(1e-9);
+    expect(t.ar.placement).toEqual({ point: [1, 0.7, -2], rotation: 90, scale: 0.02 });
+    expect(t.ar.rotation).toBeCloseTo(90, 9);
+  });
+
   it("does not turn before the model is placed", async () => {
     const t = setup();
     await t.start();
