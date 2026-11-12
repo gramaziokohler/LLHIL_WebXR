@@ -468,6 +468,25 @@ describe("createAR", () => {
     expect(baseOf(t.model).distanceTo(new Vector3(2.3, 0, 1.85))).toBeLessThan(1e-6);
   });
 
+  it("does not take a hand for a surface: a hit beside a controller is skipped for the next one", async () => {
+    const t = setup();
+    await t.start();
+    const hand = controllerRay("c1", 0);
+    hand.origin.set(0.1, 1, -0.4);
+    t.rays.push(hand);
+    // Only the hand: nothing to place on.
+    t.hitAt(new Vector3(0.1, 1.05, -0.45));
+    expect(t.reticle()!.visible).toBe(false);
+    t.select();
+    expect(t.model.visible).toBe(false);
+    // The hand, then the table behind it: the table.
+    const table = new Vector3(0.2, 0.7, -1.2);
+    t.frame.results.set(t.viewerSource(), [fakeHit(new Vector3(0.1, 1.05, -0.45)), fakeHit(table)]);
+    t.ar.update(t.frame as unknown as XRFrame, 0);
+    t.select();
+    expect(baseOf(t.model).distanceTo(table)).toBeLessThan(1e-9);
+  });
+
   it("does not turn before the model is placed", async () => {
     const t = setup();
     await t.start();

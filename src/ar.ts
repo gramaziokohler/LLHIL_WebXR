@@ -20,6 +20,8 @@ import { ANCHOR_TIMEOUT_MS, withTimeout } from "./timeout";
 const DEG = Math.PI / 180;
 /** Thumbstick deflection below this does nothing; above it the speed grows to full at 1. */
 const STICK_DEAD = 0.15;
+/** A hit this close to a controller (metres) is the hand holding it. */
+const HAND_CLEARANCE = 0.3;
 /** xr-standard gamepad: the grip (squeeze). */
 const BUTTON_GRIP = 1;
 /** Anchor drift below this (squared metres) is not worth recomputing the model's matrices. */
@@ -307,14 +309,29 @@ export function createAR(ctx: KitContext): ARController {
         : viewerSource
           ? frame.getHitTestResults(viewerSource)
           : null;
-    if (!results || results.length === 0) return;
-    const pose = results[0].getPose(ref);
-    if (!pose) return;
-    hitMatrix.fromArray(pose.transform.matrix);
-    const p = pose.transform.position;
-    hitPoint.set(p.x, p.y, p.z);
-    hitResult = results[0];
-    hasHit = true;
+    if (!results) return;
+    // The nearest surface that is not a hand: a headset's depth sensing reports the hands too.
+    for (const result of results) {
+      const pose = result.getPose(ref);
+      if (!pose) continue;
+      const p = pose.transform.position;
+      hitPoint.set(p.x, p.y, p.z);
+      if (nearController(hitPoint)) continue;
+      hitMatrix.fromArray(pose.transform.matrix);
+      hitResult = result;
+      hasHit = true;
+      return;
+    }
+  }
+
+  /** Within HAND_CLEARANCE of a controller: the hand holding it, not a surface. */
+  function nearController(point: Vector3): boolean {
+    for (const ray of ctx.input.rays()) {
+      if (ray.kind === "controller" && ray.origin.distanceToSquared(point) < HAND_CLEARANCE ** 2) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function requestAnchor(result: XRHitTestResult): void {
