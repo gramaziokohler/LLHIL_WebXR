@@ -1,4 +1,4 @@
-// Side panels (VR, and AR on a table): two columns of collapsible sections, one left and one right of the view, with
+// Side panels (VR and AR): two columns of collapsible sections, one left and one right of the view, with
 // the controls of a browser side bar (actions, toggles, segmented choices, sliders, a paragraph).
 // Body-locked: they open around the user and follow only large turns, never small head motions.
 // B or Y (the `menu-button` event) opens and closes them while any are set.
@@ -296,8 +296,8 @@ interface RayState {
 export interface PanelsDeps {
   /** Another UI (the menu) holds `uiCapture` too, so the panels do not release it. */
   otherCapture?: () => boolean;
-  /** The session has no panels (AR on site): B and Y are taken. */
-  blocked?: () => boolean;
+  /** This hand's B or Y is taken (AR on site: the right one places the model again). */
+  skipButton?: (hand: "left" | "right") => boolean;
 }
 
 export function createPanels(ctx: KitContext, deps: PanelsDeps = {}): PanelsController {
@@ -989,10 +989,11 @@ export function createPanels(ctx: KitContext, deps: PanelsDeps = {}): PanelsCont
     },
     start(): void {
       if (disposed) return;
-      running = ctx.mode !== null && deps.blocked?.() !== true;
+      running = ctx.mode !== null;
       if (!running) return;
       unsubscribe = [
-        ctx.events.on("menu-button", () => {
+        ctx.events.on("menu-button", ({ hand }) => {
+          if (deps.skipButton?.(hand)) return;
           if (panels.length > 0) (open ? closePanels : openPanels)();
         }),
         ctx.events.on("selectstart", onSelectStart),

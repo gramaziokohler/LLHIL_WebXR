@@ -139,8 +139,8 @@ export function createXRKit(options: XRKitOptions): XRKit {
   });
   const panels: PanelsController = createPanels(ctx, {
     otherCapture: () => menu.capturing,
-    // On site, B and Y align again: no panels there.
-    blocked: () => ar.alignmentState !== null,
+    // On site the right hand's B places the model again; Y, on the left, is the panels'.
+    skipButton: (hand) => ar.onSite && hand === "right",
   });
 
   const modulesFor = (mode: XRMode): KitModule[] =>

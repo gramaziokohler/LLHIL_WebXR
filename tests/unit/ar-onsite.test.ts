@@ -368,7 +368,10 @@ describe("on-site alignment: picking", () => {
 
     t.update();
     expect(t.reticle()!.visible).toBe(false);
-    expect(t.lastHud()).toEqual(["Aligned, error 0.0 cm", [HINT, "Left stick: up and down"]]);
+    expect(t.lastHud()).toEqual([
+      "Aligned, error 0.0 cm",
+      [HINT, "Left stick: up and down · Y: menu"],
+    ]);
     expect(t.states).toEqual([
       { state: "pick-a", errorM: null, restored: false },
       { state: "pick-b", errorM: null, restored: false },

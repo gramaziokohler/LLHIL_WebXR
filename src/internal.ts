@@ -230,6 +230,8 @@ export interface ARController extends KitModule {
   saveAlignment(): Promise<boolean>;
   forgetAlignment(id: string): Promise<void>;
   readonly alignmentState: AlignmentState | null;
+  /** The running session is on site (an alignment was set), whatever its state. */
+  readonly onSite: boolean;
 }
 
 /** Result of the two-point solve (src/align.ts). */

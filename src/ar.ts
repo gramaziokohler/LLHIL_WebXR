@@ -43,7 +43,7 @@ const LOST_HOLD_S = 1.5;
 const BUTTON_SAVE = 4;
 const BUTTON_REALIGN = 5;
 const CONTROLS_HINT = "Stick: turn · Grip + stick: move · A: save · B: again";
-const LIFT_HINT = "Left stick: up and down";
+const LIFT_HINT = "Left stick: up and down · Y: menu";
 const TOUCH_HINT = "Floor marks: touch each, pull the trigger";
 const SAVE_UNAVAILABLE = "Saving is not available on this device";
 
@@ -852,7 +852,9 @@ export function createAR(ctx: KitContext): ARController {
     const controllers = ctx.input.rays().filter((r) => r.kind === "controller" && r.gamepad);
     const rights = controllers.filter((r) => r.handedness === "right");
     const sticks = rights.length > 0 ? rights : controllers.slice(0, 1);
-    for (const ray of controllers) {
+    // Save and place again are the right hand's (the left Y opens the side panels); any hand's
+    // where there is no right one.
+    for (const ray of rights.length > 0 ? rights : controllers) {
       const buttons = ray.gamepad?.buttons ?? [];
       for (const index of [BUTTON_SAVE, BUTTON_REALIGN]) {
         const key = `${ray.id}:${index}`;
@@ -864,7 +866,8 @@ export function createAR(ctx: KitContext): ARController {
         else realign();
       }
     }
-    if (state !== "aligned" && state !== "saved") return;
+    // A panel has the controllers: the sticks are the panel's.
+    if ((state !== "aligned" && state !== "saved") || ctx.uiCapture) return;
     for (const ray of sticks) {
       const axes = ray.gamepad?.axes ?? [];
       // xr-standard mapping: the thumbstick is axes 2 and 3; a lone stick reports 0 and 1.
@@ -1081,6 +1084,9 @@ export function createAR(ctx: KitContext): ARController {
     forgetAlignment,
     get alignmentState() {
       return active && onsite ? state : null;
+    },
+    get onSite() {
+      return active && onsite !== null;
     },
     /** Table-top: the model's turn about up, degrees (positive turns left seen from above). */
     get rotation(): number {
