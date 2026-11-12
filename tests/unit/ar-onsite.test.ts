@@ -634,6 +634,37 @@ describe("on-site alignment: fine-tune", () => {
     expect(t.ar.alignmentState).toBe("aligned");
   });
 
+  it("start: stand takes two floor marks touched with a controller: the first is A, the second the direction", async () => {
+    const t = setup();
+    const viewer = {
+      transform: {
+        position: { x: 2, y: 1.7, z: 3 },
+        matrix: new Matrix4().setPosition(2, 1.7, 3).elements,
+      },
+    };
+    (t.frame as any).getViewerPose = () => viewer;
+    await t.start({ ...ALIGNMENT, start: "stand" });
+    t.update();
+    near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
+    const ray = gamepadRay("r");
+    // Held up: a trigger pull is not a touch.
+    ray.origin.set(7, 1.1, 7);
+    t.select(ray);
+    near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
+    // Down at the first mark, then at the second, six metres along +X: B is four metres that way.
+    ray.origin.set(10, 0.04, -5);
+    t.select(ray);
+    near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
+    // Too close to the first: asked again.
+    ray.origin.set(10.2, 0.04, -5);
+    t.select(ray);
+    ray.origin.set(16, 0.05, -5);
+    t.select(ray);
+    near(t.mapped(ALIGNMENT.a), new Vector3(10, 0, -5));
+    near(t.mapped(ALIGNMENT.b), new Vector3(14, 0, -5));
+    expect(t.ar.alignmentState).toBe("aligned");
+  });
+
   it("nudge() turns about A and moves in the user's frame", async () => {
     const t = setup();
     await t.start();

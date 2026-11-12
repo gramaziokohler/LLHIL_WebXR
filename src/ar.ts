@@ -20,6 +20,10 @@ import { ANCHOR_TIMEOUT_MS, withTimeout } from "./timeout";
 const DEG = Math.PI / 180;
 /** Thumbstick deflection below this does nothing; above it the speed grows to full at 1. */
 const STICK_DEAD = 0.15;
+/** On site: a trigger pulled with the controller this close to the floor (metres) touches a mark. */
+const TOUCH_HEIGHT = 0.3;
+/** Two touched marks closer than this (metres) give no direction. */
+const TOUCH_MIN_SPAN = 0.5;
 /** A hit this close to a controller (metres) is the hand holding it. */
 const HAND_CLEARANCE = 0.3;
 /** xr-standard gamepad: the grip (squeeze). */
@@ -38,6 +42,7 @@ const LOST_HOLD_S = 1.5;
 const BUTTON_SAVE = 4;
 const BUTTON_REALIGN = 5;
 const CONTROLS_HINT = "Stick: turn · Grip + stick: move · A: save · B: again";
+const TOUCH_HINT = "Floor marks: touch each, pull the trigger";
 const SAVE_UNAVAILABLE = "Saving is not available on this device";
 
 /** `aiming`: never placed this session; `replacing`: placed, but the reticle is back for a new spot. */
@@ -144,6 +149,8 @@ export function createAR(ctx: KitContext): ARController {
   let pendingSave: { resolve: (ok: boolean) => void; promise: Promise<boolean> } | null = null;
   /** `stand`: place from the head on the next frame that has its pose. */
   let wantStand = false;
+  /** `stand`: the first floor mark touched with a controller, waiting for the second. */
+  let touchA: Vector3 | null = null;
   const pressed = new Map<string, boolean>();
   let hudPending: { title: string; lines: string[] } | null = null;
 
@@ -209,7 +216,8 @@ export function createAR(ctx: KitContext): ARController {
     if (!active || ctx.uiCapture) return;
     if (ray.handedness !== "none") preferredHand = ray.handedness;
     if (onsite) {
-      onsitePick();
+      if (onsite.start === "stand") touchMark(ray);
+      else onsitePick();
       return;
     }
     if (phase === "placed") {
@@ -519,7 +527,10 @@ export function createAR(ctx: KitContext): ARController {
     if (state === "saved") {
       showHud(`${restored ? "Restored" : "Saved"}, error ${cm(errorM)}`, [CONTROLS_HINT]);
     } else {
-      showHud(`Aligned, error ${cm(errorM)}`, [CONTROLS_HINT]);
+      showHud(
+        `Aligned, error ${cm(errorM)}`,
+        onsite?.start === "stand" ? [CONTROLS_HINT, TOUCH_HINT] : [CONTROLS_HINT],
+      );
     }
   }
 
@@ -566,6 +577,7 @@ export function createAR(ctx: KitContext): ARController {
     correction.identity();
     state = null;
     wantStand = false;
+    touchA = null;
     errorM = null;
     restored = false;
     nudged = false;
@@ -726,6 +738,7 @@ export function createAR(ctx: KitContext): ARController {
   /** Nothing to restore: the marks, or (`stand`) the model placed from where the user stands. */
   function beginPlacing(): void {
     if (onsite?.start === "stand") {
+      touchA = null;
       wantStand = true;
       showHud("Stand on the point, face its direction");
     } else setState("pick-a");
@@ -755,6 +768,11 @@ export function createAR(ctx: KitContext): ARController {
     // The floor is the origin's height where the space has one; else an eye height below the head.
     const h = ra.dot(ctx.up);
     ra.addScaledVector(ctx.up, -(h > 0.5 ? h : ctx.options.vr.eyeHeight));
+    placeFrom(ra, f);
+  }
+
+  /** `stand`: point A at `ra`, point B along the flat unit direction `f`; the user's to adjust. */
+  function placeFrom(ra: Vector3, f: Vector3): void {
     const d = v1.subVectors(modelB, modelA);
     const rise = d.dot(ctx.up);
     const span = Math.max(1, d.addScaledVector(ctx.up, -rise).length());
@@ -764,7 +782,39 @@ export function createAR(ctx: KitContext): ARController {
     nudged = true;
     errorM = 0;
     restored = false;
-    setState("aligned");
+    if (state === "aligned") placedHud();
+    else setState("aligned");
+  }
+
+  /**
+   * `stand`, the precise way: two marks on the floor, touched with a controller. The trigger
+   * pulled with the controller down at the floor takes its position: the first touch is point
+   * A, the second gives the direction to point B (anywhere along that line, the farther the
+   * better). Controller tracking is the headset's most exact measure, and needs no camera.
+   */
+  function touchMark(ray: RaySource): void {
+    if (ray.kind !== "controller" || (state !== "aligned" && state !== "saved" && !wantStand)) {
+      return;
+    }
+    const p = ray.origin;
+    const h = p.dot(ctx.up);
+    if (h > TOUCH_HEIGHT) return;
+    // On the floor itself, whatever the controller's own height above it.
+    const point = p.clone().addScaledVector(ctx.up, -h);
+    if (!touchA) {
+      touchA = point;
+      showHud("First mark taken", ["Touch the second mark, pull the trigger"]);
+      return;
+    }
+    const f = point.clone().sub(touchA);
+    if (f.lengthSq() < TOUCH_MIN_SPAN ** 2) {
+      showHud("The marks are too close", ["Touch the second mark, pull the trigger"]);
+      return;
+    }
+    const ra = touchA;
+    touchA = null;
+    wantStand = false;
+    placeFrom(ra, f.normalize());
   }
 
   /** Where model point A sits now: the pivot of turns, so a turn never moves mark A. */

@@ -116,6 +116,8 @@ export interface ARAlignment {
    * and the model is placed from the head's position and heading, then adjusted by eye
    * (thumbstick: turn; grip and thumbstick: move) and saved. B or Y places it again from where
    * the user stands now.
+   * For an exact placement: two marks on the floor, each touched with a controller and the
+   * trigger pulled; the first is point A, the second gives the direction to point B.
    */
   start?: "marks" | "stand";
 }
