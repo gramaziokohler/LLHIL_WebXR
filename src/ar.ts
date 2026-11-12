@@ -27,11 +27,9 @@ const BUTTON_GRIP = 1;
 /** Anchor drift below this (squared metres) is not worth recomputing the model's matrices. */
 const ANCHOR_EPSILON_SQ = 1e-8;
 
-/** On site: fine-tune fires beyond this on the thumbstick, then repeats while held. */
-const NUDGE_FIRE = 0.6;
-const NUDGE_REPEAT_S = 0.15;
-const NUDGE_TURN_DEG = 0.5;
-const NUDGE_MOVE_M = 0.05;
+/** On site, fine-tuning at full deflection: degrees and metres a second (the response is squared). */
+const NUDGE_TURN_DEG_S = 20;
+const NUDGE_MOVE_M_S = 0.5;
 /** Restored anchors that give no pose for this long count as not found here. */
 const RESTORE_TIMEOUT_S = 3;
 /** How long `lost` stays on the panel before picking starts. */
@@ -39,7 +37,7 @@ const LOST_HOLD_S = 1.5;
 /** xr-standard gamepad buttons: A/X saves, B/Y aligns again. */
 const BUTTON_SAVE = 4;
 const BUTTON_REALIGN = 5;
-const CONTROLS_HINT = "Thumbstick: fine-tune · A: save · B: re-align";
+const CONTROLS_HINT = "Stick: turn · Grip + stick: move · A: save · B: again";
 const SAVE_UNAVAILABLE = "Saving is not available on this device";
 
 /** `aiming`: never placed this session; `replacing`: placed, but the reticle is back for a new spot. */
@@ -144,7 +142,8 @@ export function createAR(ctx: KitContext): ARController {
   let restoreClock = 0;
   let lostClock = 0;
   let pendingSave: { resolve: (ok: boolean) => void; promise: Promise<boolean> } | null = null;
-  const repeat = new Map<string, number>();
+  /** `stand`: place from the head on the next frame that has its pose. */
+  let wantStand = false;
   const pressed = new Map<string, boolean>();
   let hudPending: { title: string; lines: string[] } | null = null;
 
@@ -566,6 +565,7 @@ export function createAR(ctx: KitContext): ARController {
     modelB.fromArray(alignment.b).multiplyScalar(k);
     correction.identity();
     state = null;
+    wantStand = false;
     errorM = null;
     restored = false;
     nudged = false;
@@ -586,7 +586,7 @@ export function createAR(ctx: KitContext): ARController {
       saved = false;
     }
     if (!s || !supported || !saved) {
-      setState("pick-a");
+      beginPlacing();
       return;
     }
     setState("restoring");
@@ -632,7 +632,7 @@ export function createAR(ctx: KitContext): ARController {
     persistent.clear();
     onsite = null;
     state = null;
-    repeat.clear();
+    wantStand = false;
     pressed.clear();
   }
 
@@ -720,7 +720,51 @@ export function createAR(ctx: KitContext): ARController {
     restored = false;
     nudged = false;
     if (target) target.visible = false;
-    setState("pick-a");
+    beginPlacing();
+  }
+
+  /** Nothing to restore: the marks, or (`stand`) the model placed from where the user stands. */
+  function beginPlacing(): void {
+    if (onsite?.start === "stand") {
+      wantStand = true;
+      showHud("Stand on the point, face its direction");
+    } else setState("pick-a");
+  }
+
+  /** The flat forward of a pose matrix (it looks along its -Z; straight down: its top). */
+  function flatForward(e: ArrayLike<number>, out: Vector3): boolean {
+    out.set(-e[8], -e[9], -e[10]);
+    out.addScaledVector(ctx.up, -out.dot(ctx.up));
+    if (out.lengthSq() < 1e-8) {
+      out.set(e[4], e[5], e[6]);
+      out.addScaledVector(ctx.up, -out.dot(ctx.up));
+    }
+    if (out.lengthSq() < 1e-8) return false;
+    out.normalize();
+    return true;
+  }
+
+  /** `stand`: point A under the head, point B ahead of it; then it is the user's to adjust. */
+  function standPlace(frame: XRFrame, ref: XRReferenceSpace): void {
+    const pose = frame.getViewerPose?.(ref);
+    const f = new Vector3();
+    if (!pose || !flatForward(pose.transform.matrix, f)) return;
+    wantStand = false;
+    const p = pose.transform.position;
+    const ra = new Vector3(p.x, p.y, p.z);
+    // The floor is the origin's height where the space has one; else an eye height below the head.
+    const h = ra.dot(ctx.up);
+    ra.addScaledVector(ctx.up, -(h > 0.5 ? h : ctx.options.vr.eyeHeight));
+    const d = v1.subVectors(modelB, modelA);
+    const rise = d.dot(ctx.up);
+    const span = Math.max(1, d.addScaledVector(ctx.up, -rise).length());
+    const rb = ra.clone().addScaledVector(f, span).addScaledVector(ctx.up, rise);
+    if (!solveAndPlace(ra, rb)) return;
+    // No anchors yet: a save makes them where the model stands then.
+    nudged = true;
+    errorM = 0;
+    restored = false;
+    setState("aligned");
   }
 
   /** Where model point A sits now: the pivot of turns, so a turn never moves mark A. */
@@ -728,21 +772,11 @@ export function createAR(ctx: KitContext): ARController {
     return out.copy(modelA).applyMatrix4(correction);
   }
 
-  /** The head's forward on the ground, in scene coordinates (a camera looks along its -Z). */
+  /** The head's forward on the ground, in scene coordinates. */
   function headForward(out = new Vector3()): Vector3 {
     // Its world matrix is written by three.js on render, so it is at most a frame old.
     const camera = ctx.renderer.xr.getCamera?.();
-    if (camera) {
-      const e = camera.matrixWorld.elements;
-      out.set(-e[8], -e[9], -e[10]);
-      out.addScaledVector(ctx.up, -out.dot(ctx.up));
-      // Looking straight down: the top of the view points forward.
-      if (out.lengthSq() < 1e-8) {
-        out.set(e[4], e[5], e[6]);
-        out.addScaledVector(ctx.up, -out.dot(ctx.up));
-      }
-      if (out.lengthSq() > 1e-8) return out.normalize();
-    }
+    if (camera && flatForward(camera.matrixWorld.elements, out)) return out;
     return forwardAtYawZero(ctx.options.up, out);
   }
 
@@ -758,28 +792,6 @@ export function createAR(ctx: KitContext): ARController {
     nudged = true;
     revision++;
     setState("aligned");
-  }
-
-  /** One step on the push, then one every NUDGE_REPEAT_S while held. */
-  function axisSteps(key: string, value: number, dt: number): number {
-    if (!(Math.abs(value) > NUDGE_FIRE)) {
-      repeat.delete(key);
-      return 0;
-    }
-    const held = repeat.get(key);
-    if (held === undefined) {
-      repeat.set(key, 0);
-      return 1;
-    }
-    let t = held + dt;
-    if (t < NUDGE_REPEAT_S) {
-      repeat.set(key, t);
-      return 0;
-    }
-    // At most one step a frame, so a stalled frame does not jump.
-    t = Math.min(t - NUDGE_REPEAT_S, NUDGE_REPEAT_S);
-    repeat.set(key, t);
-    return 1;
   }
 
   function updateGamepads(dt: number): void {
@@ -798,18 +810,20 @@ export function createAR(ctx: KitContext): ARController {
         else realign();
       }
     }
+    if (state !== "aligned" && state !== "saved") return;
     for (const ray of sticks) {
       const axes = ray.gamepad?.axes ?? [];
       // xr-standard mapping: the thumbstick is axes 2 and 3; a lone stick reports 0 and 1.
-      const x = (axes.length >= 4 ? axes[2] : axes[0]) ?? 0;
-      const y = (axes.length >= 4 ? axes[3] : axes[1]) ?? 0;
-      const fineTune = state === "aligned" || state === "saved";
-      const turnSteps = axisSteps(`${ray.id}:x`, fineTune ? x : 0, dt);
-      const moveSteps = axisSteps(`${ray.id}:y`, fineTune ? y : 0, dt);
-      // Right turns clockwise seen from above; pushing the stick forward reports negative y.
-      const turnDeg = turnSteps ? -Math.sign(x) * NUDGE_TURN_DEG : 0;
-      const forward = moveSteps ? -Math.sign(y) * NUDGE_MOVE_M : 0;
-      if (turnDeg || forward) applyNudge(turnDeg, 0, forward);
+      const four = axes.length >= 4;
+      // Squared: a light push is a fine correction.
+      const x = stick((four ? axes[2] : axes[0]) ?? 0);
+      const y = stick((four ? axes[3] : axes[1]) ?? 0);
+      const sx = x * Math.abs(x);
+      const sy = y * Math.abs(y);
+      const k = NUDGE_MOVE_M_S * dt;
+      // With the grip: slide (forward on the stick is negative). Without: right turns clockwise.
+      if (ray.gamepad?.buttons?.[BUTTON_GRIP]?.pressed) applyNudge(0, sx * k, -sy * k);
+      else applyNudge(-sx * NUDGE_TURN_DEG_S * dt, 0, 0);
     }
   }
 
@@ -841,8 +855,9 @@ export function createAR(ctx: KitContext): ARController {
       }
     } else if (state === "lost") {
       lostClock += dt;
-      if (lostClock >= LOST_HOLD_S) setState("pick-a");
+      if (lostClock >= LOST_HOLD_S) beginPlacing();
     }
+    if (wantStand) standPlace(frame, ref);
     updateGamepads(dt);
   }
 

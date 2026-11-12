@@ -110,6 +110,14 @@ export interface ARAlignment {
   b: [number, number, number];
   /** What the marks are called on site, shown in the headset ("north-west corner"). */
   labels?: { a?: string; b?: string };
+  /**
+   * How the model is first placed when nothing is saved here. `"marks"` (the default): the user
+   * points at mark A, then B. `"stand"`: no pointing; the user stands on point A facing point B
+   * and the model is placed from the head's position and heading, then adjusted by eye
+   * (thumbstick: turn; grip and thumbstick: move) and saved. B or Y places it again from where
+   * the user stands now.
+   */
+  start?: "marks" | "stand";
 }
 
 /**

@@ -187,7 +187,7 @@ const ALIGNMENT: ARAlignment = {
 };
 const REAL_A = new Vector3(1, 0, 1);
 const REAL_B = new Vector3(5, 0, 1);
-const HINT = "Thumbstick: fine-tune · A: save · B: re-align";
+const HINT = "Stick: turn · Grip + stick: move · A: save · B: again";
 
 interface SetupOptions {
   model?: Object3D | "scene";
@@ -556,7 +556,7 @@ describe("on-site alignment: fine-tune", () => {
       .applyAxisAngle(new Vector3(0, 1, 0), deg * DEG)
       .add(REAL_A);
 
-  it("turns about A in half-degree steps on the thumbstick, repeating while held", async () => {
+  it("turns about A smoothly on the thumbstick, a light push slowly", async () => {
     const t = setup();
     await t.start();
     await t.pick();
@@ -564,44 +564,74 @@ describe("on-site alignment: fine-tune", () => {
     t.rays.push(ray);
     const axes = (ray.gamepad as any).axes as number[];
 
-    axes[2] = 0.8;
-    t.update(0.016);
-    near(t.mapped(ALIGNMENT.a), REAL_A);
-    near(t.mapped(ALIGNMENT.b), turnedB(-0.5));
+    // Full right for a tenth of a second at 20 degrees a second: clockwise seen from above.
+    axes[2] = 1;
     t.update(0.1);
-    near(t.mapped(ALIGNMENT.b), turnedB(-0.5));
-    t.update(0.1);
-    near(t.mapped(ALIGNMENT.b), turnedB(-1));
-    // Released, then pushed left once.
-    axes[2] = 0;
-    t.update(0.016);
-    axes[2] = -0.9;
-    t.update(0.016);
-    near(t.mapped(ALIGNMENT.b), turnedB(-0.5));
     near(t.mapped(ALIGNMENT.a), REAL_A);
-    // Below the threshold nothing happens.
-    axes[2] = 0.5;
+    near(t.mapped(ALIGNMENT.b), turnedB(-2));
+    // Inside the dead zone nothing happens.
+    axes[2] = 0.1;
     t.update(1);
-    near(t.mapped(ALIGNMENT.b), turnedB(-0.5));
+    near(t.mapped(ALIGNMENT.b), turnedB(-2));
+    // Half way, to the left: a quarter of the speed (the response is squared).
+    axes[2] = -0.575;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.b), turnedB(-1.5));
+    near(t.mapped(ALIGNMENT.a), REAL_A);
   });
 
-  it("moves 5 cm along the head's forward on the ground", async () => {
+  it("slides along the head's forward and right on the ground with the grip held", async () => {
     const t = setup();
     await t.start();
     await t.pick();
-    // The head looks along -X, tilted down: forward on the ground is still -X.
+    // The head looks along -X, tilted down: forward on the ground is still -X, right is -Z.
     t.head.matrixWorld.makeRotationY(90 * DEG).multiply(new Matrix4().makeRotationX(-40 * DEG));
     const ray = gamepadRay("r");
     t.rays.push(ray);
     const axes = (ray.gamepad as any).axes as number[];
-    axes[3] = -0.9;
-    t.update(0.016);
+    (ray.gamepad as any).buttons[1].pressed = true;
+    axes[3] = -1;
+    t.update(0.1);
     near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(-0.05, 0, 0)));
     axes[3] = 0;
-    t.update(0.016);
-    axes[3] = 0.9;
-    t.update(0.016);
-    near(t.mapped(ALIGNMENT.a), REAL_A);
+    axes[2] = 1;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(-0.05, 0, -0.05)));
+    // No turn while sliding.
+    near(t.mapped(ALIGNMENT.b), REAL_B.clone().add(new Vector3(-0.05, 0, -0.05)));
+  });
+
+  it("start: stand places A under the head and B ahead of it, with no marks; B places again", async () => {
+    const t = setup();
+    const pose = (x: number, z: number, yawDeg: number) => ({
+      transform: {
+        position: { x, y: 1.7, z },
+        matrix: new Matrix4().makeRotationY(yawDeg * DEG).setPosition(x, 1.7, z).elements,
+      },
+    });
+    let viewer: ReturnType<typeof pose> | null = null;
+    (t.frame as any).getViewerPose = () => viewer;
+    await t.start({ ...ALIGNMENT, start: "stand" });
+    // No head pose yet: nothing placed, no marks asked for.
+    t.update();
+    expect(t.ar.alignmentState).toBe(null);
+    // Standing at (2, 3), looking along -X: A on the floor below, B four metres ahead.
+    viewer = pose(2, 3, 90);
+    t.update();
+    expect(t.ar.alignmentState).toBe("aligned");
+    near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
+    near(t.mapped(ALIGNMENT.b), new Vector3(-2, 0, 3));
+    // B (re-align): from where the user stands now.
+    viewer = pose(0, 0, 0);
+    const ray = gamepadRay("r");
+    t.rays.push(ray);
+    (ray.gamepad as any).buttons[5].pressed = true;
+    t.update();
+    // Placed on the next frame.
+    t.update();
+    near(t.mapped(ALIGNMENT.a), new Vector3(0, 0, 0));
+    near(t.mapped(ALIGNMENT.b), new Vector3(0, 0, -4));
+    expect(t.ar.alignmentState).toBe("aligned");
   });
 
   it("nudge() turns about A and moves in the user's frame", async () => {
