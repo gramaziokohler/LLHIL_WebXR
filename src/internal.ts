@@ -221,6 +221,8 @@ export interface DiagnosticsController extends KitModule {
 
 export interface ARController extends KitModule {
   setScale(scale: number): void;
+  readonly rotation: number;
+  setRotation(degrees: number): void;
   /** Set before the session starts: on-site alignment instead of table-top placement (null clears). */
   setAlignment(alignment: ARAlignment | null): void;
   realign(): void;

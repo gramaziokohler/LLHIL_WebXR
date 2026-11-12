@@ -123,9 +123,10 @@ function setup(o: SetupOptions = {}) {
   const model = o.model === "scene" ? scene : (o.model ?? boxModel());
   if (model !== scene && !model.parent) scene.add(model);
   const ref = { kind: "local-floor" };
+  const xrCamera = new PerspectiveCamera();
   const renderer = {
     clearAlpha: 1,
-    xr: { getReferenceSpace: () => ref },
+    xr: { getReferenceSpace: () => ref, getCamera: () => xrCamera },
     getClearAlpha() {
       return this.clearAlpha;
     },
@@ -199,6 +200,7 @@ function setup(o: SetupOptions = {}) {
     hitAt,
     select,
     reticle,
+    xrCamera,
   };
 }
 
@@ -397,7 +399,7 @@ describe("createAR", () => {
     expect(placed).toHaveBeenCalledTimes(2);
   });
 
-  it("turns the placed model in steps about up through the placed point", async () => {
+  it("turns the placed model smoothly with the stick, about up through the placed point", async () => {
     const t = setup();
     t.ar.setScale(1);
     const q0 = t.model.getWorldQuaternion(new Quaternion());
@@ -406,32 +408,64 @@ describe("createAR", () => {
     t.hitAt(hit);
     t.select();
 
-    const ray = controllerRay("c0", 0.8);
+    const ray = controllerRay("c0", 1);
     t.rays.push(ray);
     const expectYaw = (deg: number) => {
       const q = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), deg * (Math.PI / 180));
       const expected = q.multiply(q0);
       expect(t.model.getWorldQuaternion(new Quaternion()).angleTo(expected)).toBeLessThan(1e-6);
       expect(baseOf(t.model).distanceTo(hit)).toBeLessThan(1e-9);
+      expect(t.ar.rotation).toBeCloseTo(deg, 6);
     };
 
+    // Full right for a tenth of a second at 60 degrees a second: clockwise seen from above.
+    t.ar.update(t.frame as unknown as XRFrame, 0.1);
+    expectYaw(-6);
+    // Inside the dead zone: nothing.
+    (ray.gamepad as any).axes[2] = 0.1;
+    t.ar.update(t.frame as unknown as XRFrame, 0.1);
+    expectYaw(-6);
+    // Half way between the dead zone and full, to the left: half speed.
+    (ray.gamepad as any).axes[2] = -0.575;
+    t.ar.update(t.frame as unknown as XRFrame, 0.1);
+    expectYaw(-3);
+    // A panel has the controllers: the stick is the panel's.
+    (t.ctx as any).uiCapture = true;
+    t.ar.update(t.frame as unknown as XRFrame, 0.1);
+    expectYaw(-3);
+    (t.ctx as any).uiCapture = false;
+    (ray.gamepad as any).axes[2] = 0;
+    t.ar.setRotation(90);
+    expectYaw(90);
+  });
+
+  it("slides the placed model on its plane with the grip held, forward being where the user looks", async () => {
+    const t = setup();
+    t.ar.setScale(1);
+    await t.start();
+    const hit = new Vector3(2, 0, 2);
+    t.hitAt(hit);
+    t.select();
+    const q = t.model.getWorldQuaternion(new Quaternion());
+
+    // Stick right and half forward, grip held; the user looks along -Z, a little down.
+    const ray = controllerRay("c0", 1);
+    (ray.gamepad as any).axes[3] = -0.575;
+    (ray.gamepad as any).buttons = [{}, { pressed: true }];
+    t.rays.push(ray);
+    t.xrCamera.lookAt(0, -1, -5);
+    t.xrCamera.updateMatrixWorld(true);
+    t.ar.update(t.frame as unknown as XRFrame, 1);
+    // 0.3 m/s: right is +X, forward -Z; no turn, no lift.
+    expect(baseOf(t.model).distanceTo(new Vector3(2.3, 0, 1.85))).toBeLessThan(1e-6);
+    expect(t.model.getWorldQuaternion(new Quaternion()).angleTo(q)).toBeLessThan(1e-9);
+    // A trigger a panel took does not ask for a new spot.
+    (t.ctx as any).uiCapture = true;
+    t.select();
+    (t.ctx as any).uiCapture = false;
+    t.hitAt(new Vector3(9, 0, 9));
     t.ar.update(t.frame as unknown as XRFrame, 0);
-    expectYaw(-15);
-    // Held: no further step.
-    t.ar.update(t.frame as unknown as XRFrame, 0);
-    expectYaw(-15);
-    // Between the thresholds: still not re-armed.
-    (ray.gamepad as any).axes[2] = 0.4;
-    t.ar.update(t.frame as unknown as XRFrame, 0);
-    (ray.gamepad as any).axes[2] = 0.8;
-    t.ar.update(t.frame as unknown as XRFrame, 0);
-    expectYaw(-15);
-    // Released, then pushed left twice.
-    for (const x of [0.1, -0.9, 0, -0.9]) {
-      (ray.gamepad as any).axes[2] = x;
-      t.ar.update(t.frame as unknown as XRFrame, 0);
-    }
-    expectYaw(15);
+    expect(baseOf(t.model).distanceTo(new Vector3(2.3, 0, 1.85))).toBeLessThan(1e-6);
   });
 
   it("does not turn before the model is placed", async () => {

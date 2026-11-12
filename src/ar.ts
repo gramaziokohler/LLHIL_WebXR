@@ -18,9 +18,10 @@ import type { AlignmentNudge, AlignmentState, ARAlignment } from "./types";
 import { ANCHOR_TIMEOUT_MS, withTimeout } from "./timeout";
 
 const DEG = Math.PI / 180;
-/** Thumbstick turn: fire beyond this, re-arm below the second (hysteresis, one step per push). */
-const TURN_FIRE = 0.6;
-const TURN_REARM = 0.3;
+/** Thumbstick deflection below this does nothing; above it the speed grows to full at 1. */
+const STICK_DEAD = 0.15;
+/** xr-standard gamepad: the grip (squeeze). */
+const BUTTON_GRIP = 1;
 /** Anchor drift below this (squared metres) is not worth recomputing the model's matrices. */
 const ANCHOR_EPSILON_SQ = 1e-8;
 
@@ -109,8 +110,6 @@ export function createAR(ctx: KitContext): ARController {
   let anchorOffsetKnown = false;
   const anchorOffset = new Vector3();
 
-  const armed = new Map<string, boolean>();
-
   // On site (K2): alignment by two reference points instead of table-top placement.
   const store = createAlignmentStore();
   let requestedAlignment: ARAlignment | null = null;
@@ -159,6 +158,10 @@ export function createAR(ctx: KitContext): ARController {
   const m1 = new Matrix4();
   const m2 = new Matrix4();
   const v1 = new Vector3();
+  const v2 = new Vector3();
+  /** A stick axis past the dead zone, rescaled to -1..1. */
+  const stick = (v: number): number =>
+    Math.abs(v) < STICK_DEAD ? 0 : (v - Math.sign(v) * STICK_DEAD) / (1 - STICK_DEAD);
 
   function applyPlacement(): void {
     if (!target) return;
@@ -201,7 +204,8 @@ export function createAR(ctx: KitContext): ARController {
   }
 
   function onSelectEnd({ ray }: { ray: RaySource }): void {
-    if (!active) return;
+    // A trigger a panel took is the panel's.
+    if (!active || ctx.uiCapture) return;
     if (ray.handedness !== "none") preferredHand = ray.handedness;
     if (onsite) {
       onsitePick();
@@ -365,24 +369,42 @@ export function createAR(ctx: KitContext): ARController {
     applyPlacement();
   }
 
-  function updateTurn(): void {
-    const step = ctx.options.ar.rotateStepDegrees * DEG;
+  /**
+   * Table-top: the thumbstick turns the placed model, smoothly (left/right, `ar.rotateSpeed` at
+   * full deflection); with the grip held it slides the model on its plane instead (the way the
+   * user looks is forward, `ar.moveSpeed`). Nothing moves while a panel has the controllers.
+   */
+  function updateSticks(dt: number): void {
+    if (phase === "aiming" || ctx.uiCapture) return;
+    let moved = false;
     for (const ray of ctx.input.rays()) {
       if (ray.kind !== "controller" || !ray.gamepad) continue;
       const axes = ray.gamepad.axes;
-      // xr-standard mapping: thumbstick x is axis 2; a lone stick reports it at 0.
-      const x = (axes.length >= 4 ? axes[2] : axes[0]) ?? 0;
-      const isArmed = armed.get(ray.id) ?? true;
-      if (isArmed && Math.abs(x) > TURN_FIRE) {
-        armed.set(ray.id, false);
-        if (phase === "aiming") continue;
+      // xr-standard mapping: the thumbstick is axes 2 and 3; a lone stick reports at 0 and 1.
+      const four = axes.length >= 4;
+      const x = stick((four ? axes[2] : axes[0]) ?? 0);
+      const y = stick((four ? axes[3] : axes[1]) ?? 0);
+      if (ray.gamepad.buttons?.[BUTTON_GRIP]?.pressed) {
+        if (!x && !y) continue;
+        const world = ctx.renderer.xr.getCamera().matrixWorld;
+        v1.setFromMatrixColumn(world, 2).negate();
+        v1.addScaledVector(ctx.up, -v1.dot(ctx.up));
+        if (v1.lengthSq() < 1e-6) continue;
+        v1.normalize();
+        v2.crossVectors(v1, ctx.up);
+        const k = ctx.options.ar.moveSpeed * dt;
+        // Forward on the stick is negative.
+        v2.multiplyScalar(x * k).addScaledVector(v1, -y * k);
+        placedPoint.add(v2);
+        // The anchor keeps holding the model, from its new spot.
+        anchorOffset.add(v2);
+      } else if (x) {
         // Pushing right turns the model clockwise seen from above.
-        turn -= Math.sign(x) * step;
-        applyPlacement();
-      } else if (!isArmed && Math.abs(x) < TURN_REARM) {
-        armed.set(ray.id, true);
-      }
+        turn -= x * ctx.options.ar.rotateSpeed * DEG * dt;
+      } else continue;
+      moved = true;
     }
+    if (moved) applyPlacement();
   }
 
   function updateReticle(): void {
@@ -943,7 +965,6 @@ export function createAR(ctx: KitContext): ARController {
     hasHit = false;
     hitResult = null;
     phase = "aiming";
-    armed.clear();
     session = null;
   }
 
@@ -966,6 +987,15 @@ export function createAR(ctx: KitContext): ARController {
     forgetAlignment,
     get alignmentState() {
       return active && onsite ? state : null;
+    },
+    /** Table-top: the model's turn about up, degrees (positive turns left seen from above). */
+    get rotation(): number {
+      return turn / DEG;
+    },
+    setRotation(degrees: number): void {
+      if (!Number.isFinite(degrees)) return;
+      turn = degrees * DEG;
+      if (active && !onsite && phase !== "aiming") applyPlacement();
     },
     /**
      * Model scale factor (1 = 1:1). Before a session it sets the initial scale; once placed it
@@ -1010,7 +1040,7 @@ export function createAR(ctx: KitContext): ARController {
         updateOnsite(frame, ref, dt);
       } else {
         updateAnchor(frame, ref);
-        updateTurn();
+        updateSticks(dt);
       }
       updateReticle();
       flushHud();

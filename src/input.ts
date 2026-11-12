@@ -106,12 +106,12 @@ export function createInput(ctx: KitContext): InputController {
     ray.gamepad = slot.source?.gamepad ?? undefined;
   }
 
-  /** Emits `menu-button` on the press edge of the top face button, in VR; allocation-free. */
+  /** Emits `menu-button` on the press edge of the top face button; allocation-free. */
   function pollMenu(slot: Slot): void {
     const ray = slot.ray;
     const pad = ray?.kind === "controller" ? ray.gamepad : undefined;
     const pressed = pad?.buttons?.[MENU_BUTTON]?.pressed === true;
-    if (pressed && !slot.menuDown && ctx.mode === "vr" && ray) {
+    if (pressed && !slot.menuDown && ctx.mode && ray) {
       const hand = ray.handedness;
       const now = performance.now();
       if (hand !== "none" && now - slot.menuAt >= MENU_DEBOUNCE_MS) {

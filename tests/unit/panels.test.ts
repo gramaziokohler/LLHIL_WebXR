@@ -186,7 +186,7 @@ function specs(): PanelSpec[] {
   ];
 }
 
-function setup(options: { withMenu?: boolean } = {}) {
+function setup(options: { withMenu?: boolean; mode?: "vr" | "ar"; blocked?: boolean } = {}) {
   const up = upVector("y");
   const events = new Emitter<AllEvents>();
   const root = new Group();
@@ -208,7 +208,7 @@ function setup(options: { withMenu?: boolean } = {}) {
     raycast: floor,
     space,
     input: { rays: () => rays },
-    mode: "vr",
+    mode: options.mode ?? "vr",
     session: null,
     options: resolved,
     theme: mergeTheme(DEFAULT_THEME, {}),
@@ -224,7 +224,10 @@ function setup(options: { withMenu?: boolean } = {}) {
         otherCapture: () => panels.capturing,
       })
     : null;
-  panels = createPanels(ctx, { otherCapture: () => menu?.capturing === true });
+  panels = createPanels(ctx, {
+    otherCapture: () => menu?.capturing === true,
+    blocked: () => options.blocked === true,
+  });
   menu?.start();
   panels.start();
   const inputs: KitEvents["panel-input"][] = [];
@@ -454,6 +457,20 @@ describe("panel hit-testing", () => {
 });
 
 describe("panels open, close and placement", () => {
+  it("runs in AR on a table too, and not where the session has none (AR on site)", () => {
+    const table = setup({ mode: "ar" });
+    table.panels.set(specs());
+    table.events.emit("menu-button", { hand: "right" });
+    expect(table.panels.isOpen).toBe(true);
+    expect(table.ctx.uiCapture).toBe(true);
+
+    const site = setup({ mode: "ar", blocked: true });
+    site.panels.set(specs());
+    site.events.emit("menu-button", { hand: "right" });
+    site.panels.open();
+    expect(site.panels.isOpen).toBe(false);
+  });
+
   it("B or Y opens and closes the panels while any are set, and reports it", () => {
     const t = setup();
     t.events.emit("menu-button", { hand: "left" });

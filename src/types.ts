@@ -91,8 +91,10 @@ export interface AROptions {
   defaultScale?: number;
   /** Use WebXR anchors where the browser offers them. Default true. */
   anchors?: boolean;
-  /** Degrees per turn step of the placed model. Default 15. */
-  rotateStepDegrees?: number;
+  /** Degrees per second the thumbstick turns the placed model at full deflection. Default 60. */
+  rotateSpeed?: number;
+  /** Metres per second the thumbstick, with the grip held, slides the placed model. Default 0.3. */
+  moveSpeed?: number;
 }
 
 /**
@@ -375,6 +377,10 @@ export interface XRKit {
   setViewpoints(viewpoints: Viewpoint[]): void;
   /** AR only: set the model scale, applied around the placed point. */
   setScale(scale: number): void;
+  /** AR on a table: turn the placed model about up, in degrees (positive turns left seen from above). */
+  setRotation(degrees: number): void;
+  /** AR on a table: the model's turn in degrees, as the thumbstick and `setRotation` left it. */
+  readonly rotation: number;
   /** AR on site: start the alignment again (point at A, then B), dropping any saved one in use. */
   realign(): void;
   /** AR on site: a small correction by eye after aligning. */
