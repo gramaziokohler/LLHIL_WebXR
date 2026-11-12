@@ -666,6 +666,22 @@ describe("on-site alignment: fine-tune", () => {
     near(t.mapped(ALIGNMENT.a), new Vector3(10, 0, -5));
     near(t.mapped(ALIGNMENT.b), new Vector3(14, 0, -5));
     expect(t.ar.alignmentState).toBe("aligned");
+
+    // Untouched, the marks give the alignment's own points back (B four metres from A).
+    const own = t.ar.alignmentMarks!;
+    near(new Vector3(...own.a), new Vector3(...ALIGNMENT.a));
+    near(new Vector3(...own.b), new Vector3(...ALIGNMENT.b));
+    // Fine-tuned: slid 0.2 m along +X (the head looks along -Z, so that is to the right) and lifted
+    // 0.05. The model points on the marks are now others; rebased on them, the model stays put
+    // and a second device touching the same marks gets the same placement.
+    t.ar.nudge({ move: [0.2, 0], lift: 0.05 });
+    const world = t.model.matrixWorld.clone();
+    const refined = t.ar.alignmentMarks!;
+    t.ar.rebaseAlignment({ id: "poi-7b", a: refined.a, b: refined.b, start: "stand" });
+    expect(t.model.matrixWorld.equals(world)).toBe(true);
+    near(t.mapped(refined.a), new Vector3(10, 0, -5));
+    near(t.mapped(refined.b), new Vector3(14, 0, -5));
+    expect(new Vector3(...refined.a).distanceTo(new Vector3(...ALIGNMENT.a))).toBeGreaterThan(0.2);
   });
 
   it("lifts and lowers the model with the left stick, and with nudge({ lift })", async () => {

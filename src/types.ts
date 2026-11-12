@@ -401,6 +401,17 @@ export interface XRKit {
   saveAlignment(): Promise<boolean>;
   /** Forget an alignment saved on this device. */
   forgetAlignment(id: string): Promise<void>;
+  /**
+   * AR on site, placed by two touched floor marks: the model points that sit on the marks now,
+   * fine-tuning included (scene units), or null. Stored as an alignment's `a` and `b`, they give
+   * every other device the same placement from the same two marks.
+   */
+  readonly alignmentMarks: Pick<ARAlignment, "a" | "b"> | null;
+  /**
+   * AR on site: swap the running session's alignment (its id and points) for another one of the
+   * same placement. The model stays where it is; a saved state turns `aligned`, to be saved anew.
+   */
+  rebaseAlignment(alignment: ARAlignment): void;
   /** The on-site alignment state, or null outside an on-site AR session. */
   readonly alignmentState: AlignmentState | null;
   /**

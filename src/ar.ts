@@ -153,6 +153,8 @@ export function createAR(ctx: KitContext): ARController {
   let wantStand = false;
   /** `stand`: the first floor mark touched with a controller, waiting for the second. */
   let touchA: Vector3 | null = null;
+  /** `stand`: the marks the model was placed by (the first, and the unit direction to the second). */
+  let touched: { a: Vector3; f: Vector3 } | null = null;
   const pressed = new Map<string, boolean>();
   let hudPending: { title: string; lines: string[] } | null = null;
 
@@ -582,6 +584,7 @@ export function createAR(ctx: KitContext): ARController {
     state = null;
     wantStand = false;
     touchA = null;
+    touched = null;
     errorM = null;
     restored = false;
     nudged = false;
@@ -741,6 +744,7 @@ export function createAR(ctx: KitContext): ARController {
 
   /** Nothing to restore: the marks, or (`stand`) the model placed from where the user stands. */
   function beginPlacing(): void {
+    touched = null;
     if (onsite?.start === "stand") {
       touchA = null;
       wantStand = true;
@@ -819,6 +823,39 @@ export function createAR(ctx: KitContext): ARController {
     touchA = null;
     wantStand = false;
     placeFrom(ra, f.normalize());
+    if (state === "aligned") touched = { a: ra, f };
+  }
+
+  /**
+   * The model points that sit on the two touched marks now, fine-tuning included: the alignment
+   * another device gets the same placement from, by touching the same marks. In scene units.
+   */
+  function marksAlignment(): Pick<ARAlignment, "a" | "b"> | null {
+    if (!touched || !onsite || (state !== "aligned" && state !== "saved")) return null;
+    const k = ctx.options.metresPerUnit;
+    const inverse = m2.copy(correction).invert();
+    const d = v1.subVectors(modelB, modelA);
+    const span = Math.max(1, d.addScaledVector(ctx.up, -d.dot(ctx.up)).length());
+    const a = touched.a.clone().applyMatrix4(inverse).divideScalar(k);
+    const b = touched.a
+      .clone()
+      .addScaledVector(touched.f, span)
+      .applyMatrix4(inverse)
+      .divideScalar(k);
+    return { a: [a.x, a.y, a.z], b: [b.x, b.y, b.z] };
+  }
+
+  /** Other points (and id) for the same placement: the model stays where it is, to be saved anew. */
+  function rebase(alignment: ARAlignment): void {
+    if (!active || !onsite) return;
+    onsite = alignment;
+    const k = ctx.options.metresPerUnit;
+    modelA.fromArray(alignment.a).multiplyScalar(k);
+    modelB.fromArray(alignment.b).multiplyScalar(k);
+    if (state !== "aligned" && state !== "saved") return;
+    nudged = true;
+    revision++;
+    setState("aligned");
   }
 
   /** Where model point A sits now: the pivot of turns, so a turn never moves mark A. */
@@ -1088,6 +1125,10 @@ export function createAR(ctx: KitContext): ARController {
     get onSite() {
       return active && onsite !== null;
     },
+    get alignmentMarks() {
+      return active ? marksAlignment() : null;
+    },
+    rebaseAlignment: rebase,
     /** Table-top: the model's turn about up, degrees (positive turns left seen from above). */
     get rotation(): number {
       return turn / DEG;

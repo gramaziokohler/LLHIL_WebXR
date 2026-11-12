@@ -232,6 +232,8 @@ export interface ARController extends KitModule {
   readonly alignmentState: AlignmentState | null;
   /** The running session is on site (an alignment was set), whatever its state. */
   readonly onSite: boolean;
+  readonly alignmentMarks: Pick<ARAlignment, "a" | "b"> | null;
+  rebaseAlignment(alignment: ARAlignment): void;
 }
 
 /** Result of the two-point solve (src/align.ts). */

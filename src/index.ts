@@ -263,6 +263,12 @@ export function createXRKit(options: XRKitOptions): XRKit {
     forgetAlignment(id: string): Promise<void> {
       return ar.forgetAlignment(id);
     },
+    get alignmentMarks() {
+      return ctx.mode === "ar" ? ar.alignmentMarks : null;
+    },
+    rebaseAlignment(alignment) {
+      if (ctx.mode === "ar") ar.rebaseAlignment(alignment);
+    },
     get alignmentState() {
       return ctx.mode === "ar" ? ar.alignmentState : null;
     },
