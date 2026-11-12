@@ -135,9 +135,17 @@ export interface ARPlacement {
 /**
  * Where the on-site alignment stands. `restoring`: looking for an alignment saved on this device;
  * `pick-a` / `pick-b`: waiting for the user to point at a mark; `aligned`: placed, not yet saved;
- * `saved`: placed and saved on this device; `lost`: a saved alignment could not be found here.
+ * `saved`: placed and saved on this device; `kept`: placed and confirmed for this session, where
+ * it could not be saved on the device; `lost`: a saved alignment could not be found here.
  */
-export type AlignmentState = "restoring" | "pick-a" | "pick-b" | "aligned" | "saved" | "lost";
+export type AlignmentState =
+  | "restoring"
+  | "pick-a"
+  | "pick-b"
+  | "aligned"
+  | "saved"
+  | "kept"
+  | "lost";
 
 /** A small correction of the alignment, by eye: a turn about up through point A, a move on the ground, a lift. */
 export interface AlignmentNudge {

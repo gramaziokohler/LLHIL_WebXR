@@ -21,7 +21,7 @@ const DEG = Math.PI / 180;
 /** Thumbstick deflection below this does nothing; above it the speed grows to full at 1. */
 const STICK_DEAD = 0.15;
 /** On site: a trigger pulled with the controller this close to the floor (metres) touches a mark. */
-const TOUCH_HEIGHT = 0.3;
+const TOUCH_HEIGHT = 0.4;
 /** Two touched marks closer than this (metres) give no direction. */
 const TOUCH_MIN_SPAN = 0.5;
 /** A hit this close to a controller (metres) is the hand holding it. */
@@ -42,10 +42,13 @@ const LOST_HOLD_S = 1.5;
 /** xr-standard gamepad buttons: A/X saves, B/Y aligns again. */
 const BUTTON_SAVE = 4;
 const BUTTON_REALIGN = 5;
-const CONTROLS_HINT = "Stick: turn · Grip + stick: move · A: save · B: again";
-const LIFT_HINT = "Left stick: up and down · Y: menu";
-const TOUCH_HINT = "Floor marks: touch each, pull the trigger";
-const SAVE_UNAVAILABLE = "Saving is not available on this device";
+/** The panel's lines are short: a headset cuts what does not fit its width. */
+const ADJUST_HINTS = [
+  "Right stick: turn",
+  "Grip + right stick: move",
+  "Left stick: height · Y: menu",
+];
+const AGAIN_HINT = "B: place again · Y: menu";
 
 /** `aiming`: never placed this session; `replacing`: placed, but the reticle is back for a new spot. */
 type Phase = "aiming" | "placed" | "replacing";
@@ -153,6 +156,9 @@ export function createAR(ctx: KitContext): ARController {
   let pendingSave: { resolve: (ok: boolean) => void; promise: Promise<boolean> } | null = null;
   /** `stand`: place from the head on the next frame that has its pose. */
   let wantStand = false;
+  /** Why the last save could not be kept on the device (the `kept` state's panel says it). */
+  let keptWhy = "";
+  const isPlaced = () => state === "aligned" || state === "saved" || state === "kept";
   /** `stand`: the first floor mark touched with a controller, waiting for the second. */
   let touchA: Vector3 | null = null;
   /** `stand`: the marks the model was placed by (the first, and the unit direction to the second). */
@@ -538,15 +544,14 @@ export function createAR(ctx: KitContext): ARController {
   }
 
   function placedHud(): void {
+    const stand = onsite?.start === "stand";
+    const error = stand ? "" : `, error ${cm(errorM)}`;
     if (state === "saved") {
-      showHud(`${restored ? "Restored" : "Saved"}, error ${cm(errorM)}`, [CONTROLS_HINT]);
+      showHud(`${restored ? "Restored" : "Saved"}${error}`, [AGAIN_HINT]);
+    } else if (state === "kept") {
+      showHud("Placed for this session", [`Not saved: ${keptWhy}`, AGAIN_HINT]);
     } else {
-      showHud(
-        `Aligned, error ${cm(errorM)}`,
-        onsite?.start === "stand"
-          ? [CONTROLS_HINT, LIFT_HINT, TOUCH_HINT]
-          : [CONTROLS_HINT, LIFT_HINT],
-      );
+      showHud(stand ? "A: save · B: place again" : `Aligned${error}`, ADJUST_HINTS);
     }
   }
 
@@ -558,7 +563,7 @@ export function createAR(ctx: KitContext): ARController {
     }
     if (next === state) return;
     state = next;
-    if (next === "aligned" || next === "saved") placedHud();
+    if (next === "aligned" || next === "saved" || next === "kept") placedHud();
     ctx.events.emit("alignment", { state: next, errorM, restored });
   }
 
@@ -811,7 +816,7 @@ export function createAR(ctx: KitContext): ARController {
    * better). Controller tracking is the headset's most exact measure, and needs no camera.
    */
   function touchMark(ray: RaySource): void {
-    if (ray.kind !== "controller" || (state !== "aligned" && state !== "saved" && !wantStand)) {
+    if (ray.kind !== "controller" || (!isPlaced() && !wantStand)) {
       return;
     }
     const p = ray.origin;
@@ -841,7 +846,7 @@ export function createAR(ctx: KitContext): ARController {
    * another device gets the same placement from, by touching the same marks. In scene units.
    */
   function marksAlignment(): Pick<ARAlignment, "a" | "b"> | null {
-    if (!touched || !onsite || (state !== "aligned" && state !== "saved")) return null;
+    if (!touched || !onsite || !isPlaced()) return null;
     const k = ctx.options.metresPerUnit;
     const inverse = m2.copy(correction).invert();
     const d = v1.subVectors(modelB, modelA);
@@ -862,7 +867,7 @@ export function createAR(ctx: KitContext): ARController {
     const k = ctx.options.metresPerUnit;
     modelA.fromArray(alignment.a).multiplyScalar(k);
     modelB.fromArray(alignment.b).multiplyScalar(k);
-    if (state !== "aligned" && state !== "saved") return;
+    if (!isPlaced()) return;
     nudged = true;
     revision++;
     setState("aligned");
@@ -882,7 +887,7 @@ export function createAR(ctx: KitContext): ARController {
   }
 
   function applyNudge(turnDeg: number, right: number, forward: number, lift = 0): void {
-    if (state !== "aligned" && state !== "saved") return;
+    if (!isPlaced()) return;
     if (turnDeg === 0 && right === 0 && forward === 0 && lift === 0) return;
     const f = headForward();
     // Right-handed: forward x up points right.
@@ -914,7 +919,7 @@ export function createAR(ctx: KitContext): ARController {
       }
     }
     // A panel has the controllers: the sticks are the panel's.
-    if ((state !== "aligned" && state !== "saved") || ctx.uiCapture) return;
+    if (!isPlaced() || ctx.uiCapture) return;
     for (const ray of sticks) {
       const axes = ray.gamepad?.axes ?? [];
       // xr-standard mapping: the thumbstick is axes 2 and 3; a lone stick reports 0 and 1.
@@ -973,8 +978,15 @@ export function createAR(ctx: KitContext): ARController {
     updateGamepads(dt);
   }
 
-  function saveUnavailable(): boolean {
-    if (state === "aligned" || state === "saved") showHud(SAVE_UNAVAILABLE, [CONTROLS_HINT]);
+  /**
+   * The device cannot keep the alignment (`why` says what failed): it holds for this session, so
+   * the user is done placing; a later A tries again.
+   */
+  function saveUnavailable(why = "no saved anchors"): boolean {
+    if (!isPlaced()) return false;
+    keptWhy = why;
+    if (state === "kept") placedHud();
+    else setState("kept");
     return false;
   }
 
@@ -983,7 +995,7 @@ export function createAR(ctx: KitContext): ARController {
    * nudge they no longer sit at the real points, so new ones are made at the corrected points.
    */
   function saveAlignment(): Promise<boolean> {
-    if (!active || !onsite || (state !== "aligned" && state !== "saved")) {
+    if (!active || !onsite || !isPlaced()) {
       return Promise.resolve(false);
     }
     if (state === "saved") return Promise.resolve(true);
@@ -1012,7 +1024,7 @@ export function createAR(ctx: KitContext): ARController {
     pendingSave = null;
     const create = frame.createAnchor?.bind(frame);
     if (!create || typeof XRRigidTransform === "undefined") {
-      request.resolve(saveUnavailable());
+      request.resolve(saveUnavailable("no anchors in this session"));
       return;
     }
     const pa = pivotA();
@@ -1028,14 +1040,16 @@ export function createAR(ctx: KitContext): ARController {
         ),
       );
     } catch {
-      request.resolve(saveUnavailable());
+      request.resolve(saveUnavailable("an anchor was refused"));
       return;
     }
     Promise.allSettled(made).then((results) => {
       const anchors = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
       if (anchors.length < 2 || token !== pickToken || !active) {
         for (const a of anchors) a.delete();
-        request.resolve(token === pickToken && active ? saveUnavailable() : false);
+        request.resolve(
+          token === pickToken && active ? saveUnavailable("an anchor was not made") : false,
+        );
         return;
       }
       commitSave(anchors[0], anchors[1], true).then(request.resolve);
@@ -1060,7 +1074,7 @@ export function createAR(ctx: KitContext): ARController {
         a.delete();
         b.delete();
       }
-      if (token === pickToken && active) saveUnavailable();
+      if (token === pickToken && active) saveUnavailable("the headset did not keep it");
       return false;
     }
     persistent.add(a);

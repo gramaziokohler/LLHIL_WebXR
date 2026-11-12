@@ -187,7 +187,8 @@ const ALIGNMENT: ARAlignment = {
 };
 const REAL_A = new Vector3(1, 0, 1);
 const REAL_B = new Vector3(5, 0, 1);
-const HINT = "Stick: turn · Grip + stick: move · A: save · B: again";
+const HINTS = ["Right stick: turn", "Grip + right stick: move", "Left stick: height · Y: menu"];
+const AGAIN = "B: place again · Y: menu";
 
 interface SetupOptions {
   model?: Object3D | "scene";
@@ -368,10 +369,7 @@ describe("on-site alignment: picking", () => {
 
     t.update();
     expect(t.reticle()!.visible).toBe(false);
-    expect(t.lastHud()).toEqual([
-      "Aligned, error 0.0 cm",
-      [HINT, "Left stick: up and down · Y: menu"],
-    ]);
+    expect(t.lastHud()).toEqual(["Aligned, error 0.0 cm", HINTS]);
     expect(t.states).toEqual([
       { state: "pick-a", errorM: null, restored: false },
       { state: "pick-b", errorM: null, restored: false },
@@ -490,7 +488,7 @@ describe("on-site alignment: restoring", () => {
     expect(t.model.visible).toBe(true);
     near(t.mapped(ALIGNMENT.a), REAL_A);
     near(t.mapped(ALIGNMENT.b), REAL_B);
-    expect(t.lastHud()).toEqual(["Restored, error 0.0 cm", [HINT]]);
+    expect(t.lastHud()).toEqual(["Restored, error 0.0 cm", [AGAIN]]);
     expect(t.states).toEqual([
       { state: "restoring", errorM: null, restored: false },
       { state: "saved", errorM: 0, restored: true },
@@ -776,7 +774,7 @@ describe("on-site alignment: save and realign", () => {
     expect(t.ar.alignmentState).toBe("saved");
     expect(t.states.at(-1)).toEqual({ state: "saved", errorM: 0, restored: false });
     t.update();
-    expect(t.lastHud()).toEqual(["Saved, error 0.0 cm", [HINT]]);
+    expect(t.lastHud()).toEqual(["Saved, error 0.0 cm", [AGAIN]]);
     // Saved anchors belong to the store now.
     t.stop();
     for (const a of anchors) expect(a.delete).not.toHaveBeenCalled();
@@ -821,14 +819,21 @@ describe("on-site alignment: save and realign", () => {
     t.rays.push(ray);
     await expect(t.ar.saveAlignment()).resolves.toBe(false);
     t.update();
-    expect(t.lastHud()).toEqual(["Saving is not available on this device", [HINT]]);
+    // Not kept on the device: it holds for this session, and the panel says why.
+    expect(t.lastHud()).toEqual([
+      "Placed for this session",
+      ["Not saved: no saved anchors", AGAIN],
+    ]);
     expect(store.save).not.toHaveBeenCalled();
-    expect(t.ar.alignmentState).toBe("aligned");
-    // The A button does the same, without changing state.
+    expect(t.ar.alignmentState).toBe("kept");
+    // The A button tries again, to the same end.
     press(t, ray, 4);
     await flush();
     expect(store.save).not.toHaveBeenCalled();
-    expect(stateNames(t)).toEqual(["pick-a", "pick-b", "aligned"]);
+    expect(stateNames(t)).toEqual(["pick-a", "pick-b", "aligned", "kept"]);
+    // Adjusting it is placing again.
+    t.ar.nudge({ turnDeg: 1 });
+    expect(t.ar.alignmentState).toBe("aligned");
   });
 
   it("resolves false when the store fails to save", async () => {
@@ -839,7 +844,9 @@ describe("on-site alignment: save and realign", () => {
     t.update(2);
     await t.pick(REAL_A, REAL_B, [fakeAnchor(), fakeAnchor()]);
     await expect(t.ar.saveAlignment()).resolves.toBe(false);
-    expect(t.ar.alignmentState).toBe("aligned");
+    expect(t.ar.alignmentState).toBe("kept");
+    t.update();
+    expect(t.lastHud()?.[1][0]).toBe("Not saved: the headset did not keep it");
   });
 
   it("realigns on the B button, dropping the anchors in use but not the saved ones", async () => {
