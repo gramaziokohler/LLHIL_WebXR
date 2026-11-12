@@ -34,6 +34,7 @@ const ANCHOR_EPSILON_SQ = 1e-8;
 /** On site, fine-tuning at full deflection: degrees and metres a second (the response is squared). */
 const NUDGE_TURN_DEG_S = 20;
 const NUDGE_MOVE_M_S = 0.5;
+const NUDGE_LIFT_M_S = 0.2;
 /** Restored anchors that give no pose for this long count as not found here. */
 const RESTORE_TIMEOUT_S = 3;
 /** How long `lost` stays on the panel before picking starts. */
@@ -42,6 +43,7 @@ const LOST_HOLD_S = 1.5;
 const BUTTON_SAVE = 4;
 const BUTTON_REALIGN = 5;
 const CONTROLS_HINT = "Stick: turn · Grip + stick: move · A: save · B: again";
+const LIFT_HINT = "Left stick: up and down";
 const TOUCH_HINT = "Floor marks: touch each, pull the trigger";
 const SAVE_UNAVAILABLE = "Saving is not available on this device";
 
@@ -529,7 +531,9 @@ export function createAR(ctx: KitContext): ARController {
     } else {
       showHud(
         `Aligned, error ${cm(errorM)}`,
-        onsite?.start === "stand" ? [CONTROLS_HINT, TOUCH_HINT] : [CONTROLS_HINT],
+        onsite?.start === "stand"
+          ? [CONTROLS_HINT, LIFT_HINT, TOUCH_HINT]
+          : [CONTROLS_HINT, LIFT_HINT],
       );
     }
   }
@@ -830,13 +834,13 @@ export function createAR(ctx: KitContext): ARController {
     return forwardAtYawZero(ctx.options.up, out);
   }
 
-  function applyNudge(turnDeg: number, right: number, forward: number): void {
+  function applyNudge(turnDeg: number, right: number, forward: number, lift = 0): void {
     if (state !== "aligned" && state !== "saved") return;
-    if (turnDeg === 0 && right === 0 && forward === 0) return;
+    if (turnDeg === 0 && right === 0 && forward === 0 && lift === 0) return;
     const f = headForward();
     // Right-handed: forward x up points right.
     const r = new Vector3().crossVectors(f, ctx.up).normalize();
-    const move = r.multiplyScalar(right).addScaledVector(f, forward);
+    const move = r.multiplyScalar(right).addScaledVector(f, forward).addScaledVector(ctx.up, lift);
     correction.copy(nudgeMatrix(correction, pivotA(), ctx.up, turnDeg, move));
     applyPlacement();
     nudged = true;
@@ -874,6 +878,14 @@ export function createAR(ctx: KitContext): ARController {
       // With the grip: slide (forward on the stick is negative). Without: right turns clockwise.
       if (ray.gamepad?.buttons?.[BUTTON_GRIP]?.pressed) applyNudge(0, sx * k, -sy * k);
       else applyNudge(-sx * NUDGE_TURN_DEG_S * dt, 0, 0);
+    }
+    // The other hand's stick, forward and back: the model up and down, onto the real floor.
+    if (rights.length === 0) return;
+    for (const ray of controllers) {
+      if (ray.handedness !== "left") continue;
+      const axes = ray.gamepad?.axes ?? [];
+      const y = stick((axes.length >= 4 ? axes[3] : axes[1]) ?? 0);
+      applyNudge(0, 0, 0, -y * Math.abs(y) * NUDGE_LIFT_M_S * dt);
     }
   }
 
@@ -1063,7 +1075,7 @@ export function createAR(ctx: KitContext): ARController {
       const turnDeg = Number.isFinite(n.turnDeg) ? (n.turnDeg as number) : 0;
       const right = Number.isFinite(n.move?.[0]) ? (n.move?.[0] as number) : 0;
       const forward = Number.isFinite(n.move?.[1]) ? (n.move?.[1] as number) : 0;
-      applyNudge(turnDeg, right, forward);
+      applyNudge(turnDeg, right, forward, Number.isFinite(n.lift) ? (n.lift as number) : 0);
     },
     saveAlignment,
     forgetAlignment,

@@ -368,7 +368,7 @@ describe("on-site alignment: picking", () => {
 
     t.update();
     expect(t.reticle()!.visible).toBe(false);
-    expect(t.lastHud()).toEqual(["Aligned, error 0.0 cm", [HINT]]);
+    expect(t.lastHud()).toEqual(["Aligned, error 0.0 cm", [HINT, "Left stick: up and down"]]);
     expect(t.states).toEqual([
       { state: "pick-a", errorM: null, restored: false },
       { state: "pick-b", errorM: null, restored: false },
@@ -662,6 +662,24 @@ describe("on-site alignment: fine-tune", () => {
     t.select(ray);
     near(t.mapped(ALIGNMENT.a), new Vector3(10, 0, -5));
     near(t.mapped(ALIGNMENT.b), new Vector3(14, 0, -5));
+    expect(t.ar.alignmentState).toBe("aligned");
+  });
+
+  it("lifts and lowers the model with the left stick, and with nudge({ lift })", async () => {
+    const t = setup();
+    await t.start();
+    await t.pick();
+    const right = gamepadRay("r");
+    const left = gamepadRay("l", "left");
+    t.rays.push(right, left);
+    // Forward on the left stick (negative): up, 0.2 m/s at full deflection.
+    (left.gamepad as any).axes[3] = -1;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(0, 0.02, 0)));
+    near(t.mapped(ALIGNMENT.b), REAL_B.clone().add(new Vector3(0, 0.02, 0)));
+    (left.gamepad as any).axes[3] = 0;
+    t.ar.nudge({ lift: -0.05 });
+    near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(0, -0.03, 0)));
     expect(t.ar.alignmentState).toBe("aligned");
   });
 

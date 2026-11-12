@@ -129,12 +129,14 @@ export interface ARAlignment {
  */
 export type AlignmentState = "restoring" | "pick-a" | "pick-b" | "aligned" | "saved" | "lost";
 
-/** A small correction of the alignment, by eye: a turn about up through point A, a move on the ground. */
+/** A small correction of the alignment, by eye: a turn about up through point A, a move on the ground, a lift. */
 export interface AlignmentNudge {
   /** Degrees, positive turns left (counter-clockwise seen from above). */
   turnDeg?: number;
   /** Metres on the ground, in the user's frame: [right, forward]. */
   move?: [number, number];
+  /** Metres up (negative: down), to seat the model on the real floor. */
+  lift?: number;
 }
 
 export interface PerformanceOptions {
