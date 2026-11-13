@@ -626,6 +626,8 @@ export function createAR(ctx: KitContext): ARController {
     } catch {
       saved = false;
     }
+    // Leftovers of failed saves go first: they use up the few handles a device allows a site.
+    if (s && supported) void store.sweep(s);
     if (!s || !supported || !saved) {
       beginPlacing();
       return;

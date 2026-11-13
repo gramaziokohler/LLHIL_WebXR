@@ -65,9 +65,39 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
       }
     },
 
+    async sweep(session) {
+      // Handles this site holds on the device that no saved alignment names: left by saves that
+      // failed half way. A device keeps only a few per site (eight on a Quest), and refuses
+      // every new one once they are used up.
+      try {
+        if (!storage || !store.supported(session)) return 0;
+        // A storage that cannot be listed cannot say which handles are in use: nothing is swept.
+        if (typeof storage.length !== "number" || typeof storage.key !== "function") return 0;
+        const list = listed(session);
+        if (!list || list.length === 0) return 0;
+        const ours = new Set<string>();
+        for (let i = 0; i < storage.length; i++) {
+          const k = storage.key(i);
+          if (!k?.startsWith(KEY_PREFIX)) continue;
+          const record = parse(storage.getItem(k) ?? "");
+          if (record) ours.add(record.a).add(record.b);
+        }
+        let swept = 0;
+        for (const uuid of list) {
+          if (ours.has(uuid)) continue;
+          await deleteHandle(session, uuid);
+          swept++;
+        }
+        return swept;
+      } catch {
+        return 0;
+      }
+    },
+
     async save(session, id, a, b, points) {
       if (!storage) return "no storage";
       if (!store.supported(session)) return "no anchors";
+      await store.sweep(session);
       const previous = read(id);
       // Handles the device already knew are not ours to delete on failure: a browser may hand back
       // the existing handle when an anchor is persisted twice.
@@ -104,7 +134,9 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
         await cleanUp();
         // What the headset said, after the colon: the only way to learn it without a console.
         const said = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-        return `handle refused: ${said}`.slice(0, 200);
+        // And how many handles the site holds: all of them used up reads the same as any refusal.
+        const held = listed(session)?.length ?? "?";
+        return `handle refused: ${said} (${held} held)`.slice(0, 220);
       }
     },
 

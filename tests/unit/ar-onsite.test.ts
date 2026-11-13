@@ -63,6 +63,7 @@ vi.mock("../../src/align", async () => {
 const store = vi.hoisted(() => ({
   supported: vi.fn((_session: unknown) => false),
   has: vi.fn((_id: string) => true),
+  sweep: vi.fn(async (_s: unknown) => 0),
   save: vi.fn(async (_s: unknown, _id: string, _a: unknown, _b: unknown) => true),
   restore: vi.fn(async (_s: unknown, _id: string): Promise<unknown> => null),
   forget: vi.fn(async (_s: unknown, _id: string) => {}),

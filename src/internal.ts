@@ -263,6 +263,8 @@ export interface TwoPointSolution {
 export interface AlignmentStore {
   /** The session can create and restore persistent anchors. */
   supported(session: XRSession): boolean;
+  /** Deletes the handles this site holds that no saved alignment names; how many went. */
+  sweep(session: XRSession): Promise<number>;
   /** A well-formed alignment is saved under `id` on this device (no session needed). */
   has(id: string): boolean;
   /**

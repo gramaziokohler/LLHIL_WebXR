@@ -79,6 +79,27 @@ function setup() {
 }
 
 describe("createAlignmentStore", () => {
+  it("sweeps the handles no saved alignment names (left by failed saves), keeping the saved ones", async () => {
+    const { session, store, xr } = setup();
+    const a = session.anchor();
+    const b = session.anchor();
+    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toBe(true);
+    // Six leftovers: with the two saved, the eight a Quest allows a site.
+    const left = Array.from({ length: 6 }, () => session.anchor());
+    for (const l of left) await l.requestPersistentHandle();
+    expect(session.persistentAnchors).toHaveLength(8);
+    expect(await store.sweep(xr)).toBe(6);
+    expect(session.persistentAnchors.sort()).toEqual([a.handle, b.handle].sort());
+    // The next save sweeps first, so it finds room.
+    for (const l of left) await l.requestPersistentHandle();
+    const c = session.anchor();
+    const d = session.anchor();
+    expect(await store.save(xr, "other", asAnchor(c), asAnchor(d))).toBe(true);
+    expect(session.persistentAnchors.sort()).toEqual(
+      [a.handle, b.handle, c.handle, d.handle].sort(),
+    );
+  });
+
   it("saves two anchors and restores them by id", async () => {
     const { storage, session, store, xr } = setup();
     const a = session.anchor();
@@ -140,7 +161,9 @@ describe("createAlignmentStore", () => {
     const a = session.anchor();
     const b = session.anchor();
     b.failHandle = true;
-    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toMatch(/^handle refused: /);
+    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toMatch(
+      /^handle refused: InvalidStateError: no \(\d+ held\)$/,
+    );
     expect(session.deletedHandles).toEqual([a.handle]);
     expect(session.persistentAnchors).not.toContain(a.handle);
     expect(storage.getItem(KEY("site"))).toBe(before);
