@@ -766,6 +766,55 @@ describe("on-site alignment: fine-tune", () => {
     near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
   });
 
+  it("matchPoints: two drags of a model corner onto the real corner place the model exactly, and say how well", async () => {
+    const t = setup();
+    await t.start();
+    await t.pick();
+    // Off by a turn and a slide: what placing by eye leaves.
+    t.ar.nudge({ turnDeg: 7, move: [0.3, -0.2], lift: 0.04 });
+    const world = (p: [number, number, number]) => t.mapped(p);
+    // Two corners of the model, and where they really are (the placement before the nudge).
+    const c1: [number, number, number] = [5, 0, 0];
+    const c2: [number, number, number] = [5, 0, -4];
+    const real1 = REAL_A.clone();
+    const real2 = REAL_B.clone();
+    const ray = gamepadRay("r");
+    const drag = (from: Vector3, to: Vector3) => {
+      ray.origin.copy(from);
+      t.ctx.events.emit("selectstart", { ray });
+      ray.origin.copy(to);
+      t.select(ray);
+    };
+    const done = t.ar.matchPoints();
+    t.update();
+    expect(t.lastHud()?.[0]).toBe("Corner 1 of 2");
+    // The first drag moves the model with the hand: that corner fits, the other not yet.
+    drag(world(c1), real1);
+    near(t.mapped(c1), real1);
+    expect(t.mapped(c2).distanceTo(real2)).toBeGreaterThan(0.1);
+    t.update();
+    expect(t.lastHud()?.[0]).toBe("Corner 2 of 2");
+    // A second corner too close to the first gives no heading: asked again.
+    drag(world([5, 0, -0.2]), real1.clone().add(new Vector3(0.2, 0, 0)));
+    t.update();
+    expect(t.lastHud()?.[0]).toBe("Too close to the first");
+    // The second drag: both corners fit.
+    drag(world(c2), real2);
+    expect(await done).toBe(true);
+    near(t.mapped(c1), real1, 1e-6);
+    near(t.mapped(c2), real2, 1e-6);
+    expect(t.ar.alignmentState).toBe("aligned");
+    t.update();
+    expect(t.lastHud()?.[0]).toBe("Adjust, then save, error 0.0 cm");
+    // The matrix a host measures by takes the model's metres to the room.
+    const m = new Matrix4().fromArray(t.ar.alignmentMatrix as number[]);
+    near(new Vector3(...c2).applyMatrix4(m), real2, 1e-6);
+    // Called off: false, and a trigger pull is a trigger pull again.
+    const again = t.ar.matchPoints();
+    t.ar.cancelMatch();
+    expect(await again).toBe(false);
+  });
+
   it("nudge() turns about A and moves in the user's frame", async () => {
     const t = setup();
     await t.start();

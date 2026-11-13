@@ -444,6 +444,20 @@ export interface XRKit {
    */
   rebaseAlignment(alignment: ARAlignment): void;
   /**
+   * AR on site, placed: make the placement exact by two drags. In each the user holds the trigger
+   * with the controller on a corner of the model and releases it on the real corner; the first
+   * moves the model, the second turns and seats it so both fit. Resolves true when done, false
+   * when called off (`cancelMatch`, a new placement, the session's end).
+   */
+  matchPoints(): Promise<boolean>;
+  cancelMatch(): void;
+  /**
+   * AR on site, placed: the matrix from the model's metres (where the alignment's points are) to
+   * scene coordinates, column-major; null otherwise. A host uses it to measure in the model from a
+   * real point, e.g. the floor under a controller.
+   */
+  readonly alignmentMatrix: number[] | null;
+  /**
    * AR: the position of the controller whose trigger is pulled next (scene coordinates), for a
    * host that measures real points, e.g. two marks on a table. That pull does nothing else.
    * Resolves null when the session ends or another request replaces this one.

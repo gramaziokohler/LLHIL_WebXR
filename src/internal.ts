@@ -237,6 +237,9 @@ export interface ARController extends KitModule {
   readonly alignmentNote: string | null;
   readonly alignmentMarks: Pick<ARAlignment, "a" | "b"> | null;
   rebaseAlignment(alignment: ARAlignment): void;
+  matchPoints(): Promise<boolean>;
+  cancelMatch(): void;
+  readonly alignmentMatrix: number[] | null;
   takePoint(): Promise<[number, number, number] | null>;
   readonly placement: ARPlacement | null;
   setPlacement(placement: ARPlacement): void;
