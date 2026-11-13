@@ -303,6 +303,10 @@ function setup(o: SetupOptions = {}) {
     await flush();
   }
   const lastHud = () => hud.show.mock.calls.at(-1) as [string, string[]] | undefined;
+  /** Whether the message is in view: shown after the last hide. */
+  const hudShown = () =>
+    (hud.show.mock.invocationCallOrder.at(-1) ?? 0) >
+    (hud.hide.mock.invocationCallOrder.at(-1) ?? 0);
   const reticle = () => root.children.find((c) => c.name === "llhil-webxr-reticle");
   return {
     ar,
@@ -326,6 +330,7 @@ function setup(o: SetupOptions = {}) {
     select,
     pick,
     lastHud,
+    hudShown,
     reticle,
   };
 }
@@ -843,6 +848,12 @@ describe("on-site alignment: save and realign", () => {
     expect(t.states.at(-1)).toEqual({ state: "saved", errorM: 0, restored: false });
     t.update();
     expect(t.lastHud()).toEqual(["Saved, error 0.0 cm", [AGAIN]]);
+    // Done: the message goes by itself after a few seconds.
+    expect(t.hudShown()).toBe(true);
+    t.update(3);
+    expect(t.hudShown()).toBe(true);
+    t.update(1.5);
+    expect(t.hudShown()).toBe(false);
     // Saved anchors belong to the store now.
     t.stop();
     for (const a of anchors) expect(a.delete).not.toHaveBeenCalled();

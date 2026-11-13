@@ -44,6 +44,8 @@ const LOST_HOLD_S = 1.5;
 const BUTTON_SAVE = 4;
 /** The panel's lines are short: a headset cuts what does not fit its width. */
 const MENU_HINT = "Menu: B or Y";
+/** How long a message that says something is done stays in view, seconds. */
+const DONE_SECONDS = 4;
 
 /** `aiming`: never placed this session; `replacing`: placed, but the reticle is back for a new spot. */
 type Phase = "aiming" | "placed" | "replacing";
@@ -164,6 +166,8 @@ export function createAR(ctx: KitContext): ARController {
   let touched: { a: Vector3; f: Vector3 } | null = null;
   const pressed = new Map<string, boolean>();
   let hudPending: { title: string; lines: string[] } | null = null;
+  /** Seconds the message in view still has (0: it stays). */
+  let hudLeft = 0;
 
   const geometry = new RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
   const material = new MeshBasicMaterial({ color: 0xffffff });
@@ -534,14 +538,21 @@ export function createAR(ctx: KitContext): ARController {
   const cm = (m: number | null) => `${((m ?? 0) * 100).toFixed(1)} cm`;
 
   /** The panel is written from `update`, once the panel module runs, so the first text is not lost. */
-  function showHud(title: string, lines: string[] = []): void {
+  /** `seconds`: a message that says something is done goes by itself; 0 stays until replaced. */
+  function showHud(title: string, lines: string[] = [], seconds = 0): void {
     hudPending = { title, lines: lines.slice(0, 3) };
+    hudLeft = seconds;
   }
 
-  function flushHud(): void {
-    if (!hudPending) return;
-    ctx.hud.show(hudPending.title, hudPending.lines);
-    hudPending = null;
+  function flushHud(dt = 0): void {
+    if (hudPending) {
+      ctx.hud.show(hudPending.title, hudPending.lines);
+      hudPending = null;
+      return;
+    }
+    if (hudLeft <= 0) return;
+    hudLeft -= dt;
+    if (hudLeft <= 0) ctx.hud.hide();
   }
 
   function pickHud(mark: "a" | "b", notice?: string): void {
@@ -553,10 +564,10 @@ export function createAR(ctx: KitContext): ARController {
   function placedHud(): void {
     const error = onsite?.start === "stand" ? "" : `, error ${cm(errorM)}`;
     if (state === "saved") {
-      showHud(`${restored ? "Restored" : "Saved"}${error}`, [MENU_HINT]);
+      showHud(`${restored ? "Restored" : "Saved"}${error}`, [MENU_HINT], DONE_SECONDS);
     } else if (state === "kept") {
       // The short reason here; all of it in alignmentNote, for a host with room to show it.
-      showHud("Placed, not saved", [`Why: ${keptWhy.split(":")[0]}`, MENU_HINT]);
+      showHud("Placed, not saved", [`Why: ${keptWhy.split(":")[0]}`, MENU_HINT], 2 * DONE_SECONDS);
     } else {
       showHud(`Adjust, then save${error}`, [`Stick: ${tool}`, MENU_HINT]);
     }
@@ -1264,7 +1275,7 @@ export function createAR(ctx: KitContext): ARController {
         updateSticks(dt);
       }
       updateReticle();
-      flushHud();
+      flushHud(dt);
     },
     stop,
     dispose(): void {
