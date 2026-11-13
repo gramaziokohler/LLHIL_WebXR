@@ -100,6 +100,26 @@ describe("createAlignmentStore", () => {
     );
   });
 
+  it("a handle the device will not delete unloaded is restored first, then deleted", async () => {
+    const { session, store, xr } = setup();
+    const left = Array.from({ length: 3 }, () => session.anchor());
+    for (const l of left) await l.requestPersistentHandle();
+    // As a Quest 3 did: a delete is refused until the handle was restored in this session.
+    const loaded = new Set<string>();
+    const restore = session.restorePersistentAnchor.bind(session);
+    const remove = session.deletePersistentAnchor.bind(session);
+    session.restorePersistentAnchor = async (id: string) => {
+      loaded.add(id);
+      return restore(id);
+    };
+    session.deletePersistentAnchor = async (id: string) => {
+      if (!loaded.has(id)) throw new DOMException("not loaded", "InvalidStateError");
+      return remove(id);
+    };
+    expect(await store.sweep(xr)).toBe(3);
+    expect(session.persistentAnchors).toEqual([]);
+  });
+
   it("saves two anchors and restores them by id", async () => {
     const { storage, session, store, xr } = setup();
     const a = session.anchor();
@@ -162,7 +182,7 @@ describe("createAlignmentStore", () => {
     const b = session.anchor();
     b.failHandle = true;
     expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toMatch(
-      /^handle refused: InvalidStateError: no \(\d+ held\)$/,
+      /^handle refused: InvalidStateError: no \(\d+ held/,
     );
     expect(session.deletedHandles).toEqual([a.handle]);
     expect(session.persistentAnchors).not.toContain(a.handle);

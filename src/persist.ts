@@ -85,8 +85,7 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
         let swept = 0;
         for (const uuid of list) {
           if (ours.has(uuid)) continue;
-          await deleteHandle(session, uuid);
-          swept++;
+          if (await deleteHandle(session, uuid)) swept++;
         }
         return swept;
       } catch {
@@ -133,10 +132,11 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
       } catch (error) {
         await cleanUp();
         // What the headset said, after the colon: the only way to learn it without a console.
-        const said = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-        // And how many handles the site holds: all of them used up reads the same as any refusal.
+        // And how many handles the site holds, and what a delete was told: all of them used up
+        // reads the same as any refusal.
         const held = listed(session)?.length ?? "?";
-        return `handle refused: ${said} (${held} held)`.slice(0, 220);
+        const del = deleteNote ? `; delete: ${deleteNote}` : "";
+        return `handle refused: ${said(error)} (${held} held${del})`.slice(0, 320);
       }
     },
 
@@ -241,13 +241,45 @@ function listed(session: XRSession): string[] | null {
   }
 }
 
-async function deleteHandle(session: XRSession, uuid: string): Promise<void> {
+/** What the device said to the last delete that failed, for a host with no console to show. */
+let deleteNote = "";
+
+/**
+ * Deletes a persistent handle. A headset can refuse one it has not loaded in this session (seen on
+ * a Quest 3: nine handles held, none deleted), so a refusal is followed by a restore and a second
+ * try; the restored anchor is dropped again either way.
+ */
+async function deleteHandle(session: XRSession, uuid: string): Promise<boolean> {
   try {
-    await session.deletePersistentAnchor?.(uuid);
-  } catch {
-    // Already gone, or the device refused: either way nothing more to do.
+    await withTimeout(
+      Promise.resolve(session.deletePersistentAnchor?.(uuid)),
+      ANCHOR_TIMEOUT_MS,
+      "anchor delete",
+    );
+    if (!listed(session)?.includes(uuid)) return true;
+  } catch (error) {
+    deleteNote = said(error);
+  }
+  let anchor: XRAnchor | null = null;
+  try {
+    const restore = session.restorePersistentAnchor as (uuid: string) => Promise<XRAnchor>;
+    anchor = await withTimeout(restore.call(session, uuid), ANCHOR_TIMEOUT_MS, "anchor restore");
+    await withTimeout(
+      Promise.resolve(session.deletePersistentAnchor?.(uuid)),
+      ANCHOR_TIMEOUT_MS,
+      "anchor delete",
+    );
+    return !listed(session)?.includes(uuid);
+  } catch (error) {
+    deleteNote = said(error);
+    return false;
+  } finally {
+    if (anchor) deleteAnchor(anchor);
   }
 }
+
+const said = (error: unknown): string =>
+  error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 
 function deleteAnchor(anchor: XRAnchor): void {
   try {
