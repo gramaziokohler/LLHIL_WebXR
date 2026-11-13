@@ -136,7 +136,7 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
         // reads the same as any refusal.
         const held = listed(session)?.length ?? "?";
         const del = deleteNote ? `; delete: ${deleteNote}` : "";
-        return `handle refused: ${said(error)} (${held} held${del})`.slice(0, 320);
+        return `handle refused: ${said(error)} (${held} held${del})`.slice(0, 420);
       }
     },
 
@@ -250,6 +250,7 @@ let deleteNote = "";
  * try; the restored anchor is dropped again either way.
  */
 async function deleteHandle(session: XRSession, uuid: string): Promise<boolean> {
+  let first = "";
   try {
     await withTimeout(
       Promise.resolve(session.deletePersistentAnchor?.(uuid)),
@@ -257,8 +258,9 @@ async function deleteHandle(session: XRSession, uuid: string): Promise<boolean> 
       "anchor delete",
     );
     if (!listed(session)?.includes(uuid)) return true;
+    first = "resolved, handle still listed";
   } catch (error) {
-    deleteNote = said(error);
+    first = said(error);
   }
   let anchor: XRAnchor | null = null;
   try {
@@ -271,7 +273,8 @@ async function deleteHandle(session: XRSession, uuid: string): Promise<boolean> 
     );
     return !listed(session)?.includes(uuid);
   } catch (error) {
-    deleteNote = said(error);
+    // Both answers: the plain delete's, then the restore-and-delete's.
+    deleteNote = `${first} / ${said(error)}`;
     return false;
   } finally {
     if (anchor) deleteAnchor(anchor);
