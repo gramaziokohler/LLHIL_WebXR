@@ -44,12 +44,18 @@ const LOST_HOLD_S = 1.5;
 const BUTTON_SAVE = 4;
 /** The panel's lines are short: a headset cuts what does not fit its width. */
 const MENU_HINT = "Menu: B or Y";
+/** The kept anchors closer than this (metres) give no heading: new ones are made. */
+const REPOINT_MIN_SPAN = 0.1;
+/** Frames a save waits for the kept anchors' poses before it makes new ones. */
+const REPOINT_FRAMES = 90;
 /** Matching two points: what to do, in lines that fit the panel. */
 const MATCH_LINES = [
-  "Hold the trigger on a corner",
-  "of the model, release it on",
-  "the real corner",
+  "Point at a corner of the model,",
+  "hold the trigger, point at the",
+  "real corner and release",
 ];
+/** How far a drag reaches for the model, metres. */
+const MATCH_REACH = 60;
 /** Two matched corners closer than this (metres) give no heading. */
 const MATCH_MIN_SPAN = 0.5;
 /** How long a message that says something is done stays in view, seconds. */
@@ -94,7 +100,8 @@ export function createAR(ctx: KitContext): ARController {
    */
   let match: {
     resolve: (ok: boolean) => void;
-    from: Vector3 | null;
+    /** The model point the ray met when the trigger went down (model metres), and how far along it. */
+    from: { m: Vector3; d: number } | null;
     pin: { m: Vector3; r: Vector3 } | null;
   } | null = null;
   /** Placed by two matched points: the panel shows how well they fit. */
@@ -169,7 +176,20 @@ export function createAR(ctx: KitContext): ARController {
   let restoredAnchors: { a: XRAnchor; b: XRAnchor } | null = null;
   let restoreClock = 0;
   let lostClock = 0;
-  let pendingSave: { resolve: (ok: boolean) => void; promise: Promise<boolean> } | null = null;
+  let pendingSave: {
+    resolve: (ok: boolean) => void;
+    promise: Promise<boolean>;
+    /** Still asking the store for the anchors saved before. */
+    waiting: boolean;
+    /** Frames the kept anchors gave no pose. */
+    tries: number;
+  } | null = null;
+  /**
+   * The two anchors this alignment has on the device, restored or saved in this session. A save
+   * after the first keeps them and only says which model points now stand on them: a device can
+   * refuse to delete a handle, so making new ones each time uses up the few it allows.
+   */
+  let keeper: { a: XRAnchor; b: XRAnchor } | null = null;
   /** `stand`: place from the head on the next frame that has its pose. */
   let wantStand = false;
   /** What the thumbstick does to the placed model. */
@@ -258,7 +278,14 @@ export function createAR(ctx: KitContext): ARController {
     if (ctx.uiCapture) return;
     // Matching two points: the release of a drag that began on a corner of the model.
     if (match && ray.kind === "controller") {
-      if (match.from) matchDrop(match.from, ray.origin);
+      // Where the ray meets the room now (the reticle); nothing real met: as far along the ray as
+      // the model point was.
+      if (match.from) {
+        const to = hasHit
+          ? hitPoint.clone()
+          : ray.origin.clone().addScaledVector(ray.direction, match.from.d);
+        matchDrop(match.from.m, to);
+      }
       return;
     }
     if (ray.handedness !== "none") preferredHand = ray.handedness;
@@ -276,9 +303,31 @@ export function createAR(ctx: KitContext): ARController {
   }
   const offSelectEnd = ctx.events.on("selectend", onSelectEnd);
   const offSelectStart = ctx.events.on("selectstart", ({ ray }: { ray: RaySource }) => {
-    if (match && active && ray.kind === "controller" && !ctx.uiCapture)
-      match.from = ray.origin.clone();
+    if (!match || !active || ray.kind !== "controller" || ctx.uiCapture) return;
+    // The hit-test follows this hand from here on: its ray is the one that drags.
+    if (ray.handedness !== "none") preferredHand = ray.handedness;
+    match.from = pointOnModel(ray);
+    if (!match.from) showHud("Point at the model", MATCH_LINES);
   });
+
+  /**
+   * Where a controller's ray meets the model as it stands in the room: the point in the model's
+   * metres (where it stays whatever the placement does) and its distance along the ray.
+   */
+  function pointOnModel(ray: RaySource): { m: Vector3; d: number } | null {
+    const inverse = m2.copy(correction).invert();
+    const k = ctx.options.metresPerUnit;
+    if (ctx.hostRaycast) {
+      // The host's raycast knows the model at rest: the ray goes there (the placement turns and
+      // moves, so a direction only turns), and the answer comes back in the model's metres.
+      const origin = ray.origin.clone().applyMatrix4(inverse).divideScalar(k);
+      const direction = ray.direction.clone().transformDirection(inverse);
+      const hit = ctx.raycast(origin, direction, MATCH_REACH / k, "all");
+      return hit ? { m: hit.point.clone().multiplyScalar(k), d: hit.distance * k } : null;
+    }
+    const hit = ctx.raycast(ray.origin, ray.direction, MATCH_REACH, "all");
+    return hit ? { m: hit.point.clone().applyMatrix4(inverse), d: hit.distance } : null;
+  }
 
   async function requestViewerSource(gen: number): Promise<void> {
     const s = session;
@@ -491,8 +540,10 @@ export function createAR(ctx: KitContext): ARController {
   }
 
   function updateReticle(): void {
+    // On site: while a mark is asked for, and while a matching drag is held (where a release lands).
     reticle.visible =
-      hasHit && (onsite ? state === "pick-a" || state === "pick-b" : phase !== "placed");
+      hasHit &&
+      (onsite ? state === "pick-a" || state === "pick-b" || !!match?.from : phase !== "placed");
     if (!reticle.visible) return;
     // The hit pose is in world coordinates; the reticle lives under the kit's root.
     ctx.root.updateWorldMatrix(true, false);
@@ -688,6 +739,7 @@ export function createAR(ctx: KitContext): ARController {
         }
         persistent.add(r.a);
         persistent.add(r.b);
+        keeper = { a: r.a, b: r.b };
         if (r.points) {
           modelA.fromArray(r.points, 0);
           modelB.fromArray(r.points, 3);
@@ -716,6 +768,7 @@ export function createAR(ctx: KitContext): ARController {
     hudPending = null;
     ctx.hud.hide();
     persistent.clear();
+    keeper = null;
     onsite = null;
     state = null;
     wantStand = false;
@@ -936,17 +989,17 @@ export function createAR(ctx: KitContext): ARController {
   }
 
   /**
-   * One drag of matching two points: the model point that was at `from` goes to `to`. The first
+   * One drag of matching two points: the model point `m` (model metres) goes to `to`. The first
    * drag moves the model with the hand; the second, of another corner, turns and seats it so both
    * corners fit (the two-point solve), and the panel says how well.
    */
-  function matchDrop(from: Vector3, to: Vector3): void {
+  function matchDrop(m: Vector3, to: Vector3): void {
     const job = match;
     if (!job || !isPlaced()) return;
     job.from = null;
-    // In the model's own metres, where it stays whatever the placement does.
-    const m = from.clone().applyMatrix4(m2.copy(correction).invert());
     if (!job.pin) {
+      // Where that model point stands now, to where it belongs.
+      const from = v2.copy(m).applyMatrix4(correction);
       correction.premultiply(m1.makeTranslation(to.x - from.x, to.y - from.y, to.z - from.z));
       applyPlacement();
       job.pin = { m, r: to.clone() };
@@ -1119,19 +1172,75 @@ export function createAR(ctx: KitContext): ARController {
       supported = false;
     }
     if (!s || !supported) return Promise.resolve(saveUnavailable());
-    if (!nudged && anchorA && anchorB) return commitSave(anchorA, anchorB, false);
-    // New anchors need an active frame: they are made in the next update.
+    if (!nudged && !keeper && anchorA && anchorB) return commitSave(anchorA, anchorB, false);
+    // Anchors are read and made in a frame: the next update does it.
     let resolve: (ok: boolean) => void = () => {};
     const promise = new Promise<boolean>((r) => {
       resolve = r;
     });
-    pendingSave = { resolve, promise };
+    const request = { resolve, promise, waiting: false, tries: 0 };
+    pendingSave = request;
+    // Anchors saved before and not in hand (forgotten, or not found when the session began): asked
+    // for once more, to use them again.
+    if (!keeper) {
+      const alignment = onsite;
+      request.waiting = true;
+      const token = pickToken;
+      let asked: Promise<{ a: XRAnchor; b: XRAnchor } | null>;
+      try {
+        asked = store.restore(s, alignment.id, true);
+      } catch {
+        asked = Promise.resolve(null);
+      }
+      asked
+        .then(
+          (r) => {
+            if (r && token === pickToken && active && onsite === alignment) {
+              persistent.add(r.a);
+              persistent.add(r.b);
+              keeper = { a: r.a, b: r.b };
+            }
+          },
+          () => {},
+        )
+        .finally(() => {
+          request.waiting = false;
+        });
+    }
     return promise;
   }
 
   function saveAtCorrectedPoints(frame: XRFrame, ref: XRReferenceSpace): void {
     const request = pendingSave;
-    if (!request) return;
+    if (!request || request.waiting) return;
+    // The anchors this alignment already has: the model points that stand on them now are saved,
+    // and nothing new is asked of the device.
+    if (keeper && onsite) {
+      const pa = anchorPosition(frame, ref, keeper.a);
+      const pb = anchorPosition(frame, ref, keeper.b);
+      if (pa && pb) {
+        const inverse = m2.copy(correction).invert();
+        pa.applyMatrix4(inverse);
+        pb.applyMatrix4(inverse);
+        const d = v1.subVectors(pb, pa);
+        const apart = d.addScaledVector(ctx.up, -d.dot(ctx.up)).length() >= REPOINT_MIN_SPAN;
+        if (apart && store.repoint(onsite.id, [...pa.toArray(), ...pb.toArray()])) {
+          pendingSave = null;
+          modelA.copy(pa);
+          modelB.copy(pb);
+          anchorA = keeper.a;
+          anchorB = keeper.b;
+          touched = null;
+          nudged = false;
+          setState("saved");
+          request.resolve(true);
+          return;
+        }
+      } else if (++request.tries < REPOINT_FRAMES) {
+        // Not tracked this frame: a moment's patience before new anchors are made.
+        return;
+      }
+    }
     pendingSave = null;
     const create = frame.createAnchor?.bind(frame);
     if (!create || typeof XRRigidTransform === "undefined") {
@@ -1190,6 +1299,7 @@ export function createAR(ctx: KitContext): ARController {
     }
     persistent.add(a);
     persistent.add(b);
+    keeper = { a, b };
     if (token !== pickToken || !active) return true;
     if (fresh) {
       deleteAnchor(anchorA);
@@ -1208,8 +1318,7 @@ export function createAR(ctx: KitContext): ARController {
   async function forgetAlignment(id: string): Promise<void> {
     await store.forget(session, id);
     if (!active || onsite?.id !== id) return;
-    // The anchors in use were the saved ones: they are no longer kept, so saving makes new ones.
-    for (const a of [anchorA, anchorB]) if (a) persistent.delete(a);
+    // Nothing is saved any more; the two anchors stay in hand, and the next save uses them again.
     nudged = true;
     if (state === "saved") setState("aligned");
   }

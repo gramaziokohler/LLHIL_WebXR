@@ -114,6 +114,7 @@ export function createXRKit(options: XRKitOptions): XRKit {
     root,
     up: upVector(resolved.up),
     raycast: options.raycast ?? createDefaultRaycast(floors, () => resolved.model, root),
+    hostRaycast: options.raycast !== undefined,
     theme: mergeTheme(DEFAULT_THEME, options.ui?.theme),
     uiCapture: false,
     mode: null,

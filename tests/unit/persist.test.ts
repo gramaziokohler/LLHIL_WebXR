@@ -245,23 +245,29 @@ describe("createAlignmentStore", () => {
     }
   });
 
-  it("forget deletes the device handles and the record", async () => {
+  it("forget keeps the two handles for the next save, and the alignment is gone", async () => {
     const { storage, session, store, xr } = setup();
     const a = session.anchor();
     const b = session.anchor();
-    await store.save(xr, "site", asAnchor(a), asAnchor(b));
+    await store.save(xr, "site", asAnchor(a), asAnchor(b), [0, 0, 0, 4, 0, 0]);
     await store.forget(xr, "site");
-    expect(session.deletedHandles.sort()).toEqual([a.handle, b.handle].sort());
-    expect(session.persistentAnchors).toEqual([]);
-    expect(storage.getItem(KEY("site"))).toBeNull();
-  });
-
-  it("forget without a session only removes the record", async () => {
-    const { storage, session, store, xr } = setup();
-    await store.save(xr, "site", asAnchor(session.anchor()), asAnchor(session.anchor()));
-    await store.forget(null, "site");
+    // Nothing is asked of the device: a headset can refuse to delete, and what it refuses stays.
     expect(session.deletedHandles).toEqual([]);
-    expect(storage.getItem(KEY("site"))).toBeNull();
+    expect(session.persistentAnchors.sort()).toEqual([a.handle, b.handle].sort());
+    expect(store.has("site")).toBe(false);
+    expect(await store.restore(xr, "site")).toBeNull();
+    // The next save asks for them by name and puts other model points on them.
+    const again = await store.restore(xr, "site", true);
+    expect((again?.a as unknown as FakeAnchor).handle).toBe(a.handle);
+    expect(store.repoint("site", [1, 0, 0, 5, 0, 0])).toBe(true);
+    expect(store.has("site")).toBe(true);
+    expect((await store.restore(xr, "site"))?.points).toEqual([1, 0, 0, 5, 0, 0]);
+    expect(session.persistentAnchors).toHaveLength(2);
+    expect(JSON.parse(storage.getItem(KEY("site")) as string)).toMatchObject({
+      a: a.handle,
+      b: b.handle,
+    });
+    expect(store.repoint("nothing-saved", [0, 0, 0, 1, 0, 0])).toBe(false);
   });
 
   it("reports unsupported sessions and never throws on them", async () => {

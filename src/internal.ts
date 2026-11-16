@@ -89,6 +89,11 @@ export interface KitContext {
   up: Vector3;
   /** Raycast in scene coordinates: the host's `raycast` option, or the default one. */
   raycast: RaycastFn;
+  /**
+   * The raycast is the host's own: it knows the model where it rests, not where AR placed it, so
+   * in AR a ray is taken into the model's frame before it is asked.
+   */
+  hostRaycast: boolean;
   /** Moves the user (T2). Always present; set before any module starts. */
   space: SpaceController;
   /** Look of the in-headset panels; replaced (never mutated) by `kit.setTheme`. */
@@ -286,8 +291,11 @@ export interface AlignmentStore {
   restore(
     session: XRSession,
     id: string,
+    evenForgotten?: boolean,
   ): Promise<{ a: XRAnchor; b: XRAnchor; points?: number[] } | null>;
-  /** Deletes the saved anchors of `id` (from the device and from storage). */
+  /** Saves other model points for the two anchors `id` already has; false when it has none. */
+  repoint(id: string, points: number[]): boolean;
+  /** Forgets the alignment of `id`; its two handles are kept for the next save to use again. */
   forget(session: XRSession | null, id: string): Promise<void>;
 }
 

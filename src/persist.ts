@@ -12,6 +12,8 @@ interface SavedRecord {
   savedAt: string;
   /** The model points the two anchors stand for (six numbers: A, then B), where the saver gave them. */
   p?: number[];
+  /** Forgotten: no alignment to restore, but the two handles are kept, to be used again by the next save. */
+  f?: true;
 }
 
 export function createAlignmentStore(storage: Storage | null = safeLocalStorage()): AlignmentStore {
@@ -52,7 +54,21 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
 
   const store: AlignmentStore = {
     has(id) {
-      return read(id) !== null;
+      const record = read(id);
+      return record !== null && record.f !== true;
+    },
+    repoint(id, points) {
+      // The same two anchors, other model points on them: nothing is asked of the device, so nothing
+      // can be left behind on it.
+      const record = read(id);
+      if (!record) return false;
+      return write(id, {
+        v: 1,
+        a: record.a,
+        b: record.b,
+        savedAt: new Date().toISOString(),
+        p: points,
+      });
     },
     supported(session) {
       try {
@@ -140,11 +156,11 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
       }
     },
 
-    async restore(session, id) {
+    async restore(session, id, evenForgotten = false) {
       try {
         if (!store.supported(session)) return null;
         const record = read(id);
-        if (!record) return null;
+        if (!record || (record.f === true && !evenForgotten)) return null;
         const list = listed(session);
         // Saved on another device or wiped from this one: the handles cannot be restored here.
         if (list && !(list.includes(record.a) && list.includes(record.b))) return null;
@@ -166,17 +182,12 @@ export function createAlignmentStore(storage: Storage | null = safeLocalStorage(
       }
     },
 
-    async forget(session, id) {
-      try {
-        const record = read(id);
-        if (record && session && store.supported(session)) {
-          await deleteHandle(session, record.a);
-          if (record.b !== record.a) await deleteHandle(session, record.b);
-        }
-      } catch {
-        // Best effort: the storage record goes regardless.
-      }
-      remove(id);
+    async forget(_session, id) {
+      // The handles stay on the device and in the record: a headset can refuse to delete them (a
+      // Quest 3 did, every time), and each one left behind counts against the few a site may hold.
+      // Kept, the next save takes the same two again.
+      const record = read(id);
+      if (record) write(id, { v: 1, a: record.a, b: record.b, savedAt: record.savedAt, f: true });
     },
   };
   return store;
@@ -197,7 +208,14 @@ function parse(raw: string): SavedRecord | null {
       p.every((n) => typeof n === "number" && Number.isFinite(n))
         ? (p as number[])
         : undefined;
-    return { v: 1, a: r.a, b: r.b, savedAt: r.savedAt, ...(points ? { p: points } : {}) };
+    return {
+      v: 1,
+      a: r.a,
+      b: r.b,
+      savedAt: r.savedAt,
+      ...(points ? { p: points } : {}),
+      ...(r.f === true ? { f: true as const } : {}),
+    };
   } catch {
     return null;
   }

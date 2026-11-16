@@ -337,7 +337,10 @@ export interface XRKitOptions {
   controllerModels?: boolean;
   /** Show hand models where hand tracking is available. Default true. */
   hands?: boolean;
-  /** Replace the default raycast, for example with the host's BVH. */
+  /**
+   * Replace the default raycast, for example with the host's BVH. In AR on site the model is moved
+   * into the room: a host's raycast is then asked in the model's own frame, as it rests.
+   */
   raycast?: RaycastFn;
   /**
    * Whether `raycast` can find the floors yet, for hosts that build them after the session
@@ -444,8 +447,8 @@ export interface XRKit {
    */
   rebaseAlignment(alignment: ARAlignment): void;
   /**
-   * AR on site, placed: make the placement exact by two drags. In each the user holds the trigger
-   * with the controller on a corner of the model and releases it on the real corner; the first
+   * AR on site, placed: make the placement exact by two drags. In each the user points at a
+   * corner of the model, holds the trigger, points at the real corner and releases; the first
    * moves the model, the second turns and seats it so both fit. Resolves true when done, false
    * when called off (`cancelMatch`, a new placement, the session's end).
    */

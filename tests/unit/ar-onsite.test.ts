@@ -66,6 +66,7 @@ const store = vi.hoisted(() => ({
   sweep: vi.fn(async (_s: unknown) => 0),
   save: vi.fn(async (_s: unknown, _id: string, _a: unknown, _b: unknown) => true),
   restore: vi.fn(async (_s: unknown, _id: string): Promise<unknown> => null),
+  repoint: vi.fn((_id: string, _points: number[]) => true),
   forget: vi.fn(async (_s: unknown, _id: string) => {}),
 }));
 vi.mock("../../src/persist", () => ({ createAlignmentStore: () => store }));
@@ -766,7 +767,7 @@ describe("on-site alignment: fine-tune", () => {
     near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
   });
 
-  it("matchPoints: two drags of a model corner onto the real corner place the model exactly, and say how well", async () => {
+  it("matchPoints: two drags, each from the model corner pointed at to the real corner pointed at, place the model exactly", async () => {
     const t = setup();
     await t.start();
     await t.pick();
@@ -779,16 +780,34 @@ describe("on-site alignment: fine-tune", () => {
     const real1 = REAL_A.clone();
     const real2 = REAL_B.clone();
     const ray = gamepadRay("r");
-    const drag = (from: Vector3, to: Vector3) => {
-      ray.origin.copy(from);
+    // The model under the ray: the corner the test aims at, as it stands in the room now.
+    let aimed: Vector3 | null = null;
+    (t.ctx as any).raycast = (origin: Vector3) =>
+      aimed ? { point: aimed.clone(), distance: aimed.distanceTo(origin) } : null;
+    const hand = new Vector3(0, 1.2, 0);
+    /** Points at a model corner and pulls; then points at the real corner, as far along the ray, and lets go. */
+    const drag = (corner: Vector3 | null, to: Vector3) => {
+      aimed = corner;
+      ray.origin.copy(hand);
+      if (corner) ray.direction.copy(corner).sub(hand).normalize();
       t.ctx.events.emit("selectstart", { ray });
-      ray.origin.copy(to);
+      // No real surface met (no hit-test in this fake): the release lands as far along the ray.
+      const d = corner ? corner.distanceTo(hand) : 1;
+      ray.direction.set(0, -1, 0);
+      ray.origin.copy(to).addScaledVector(ray.direction, -d);
       t.select(ray);
     };
+    // No real surface under the ray from here on (the picks' hits are gone).
+    t.frame.results.clear();
     const done = t.ar.matchPoints();
     t.update();
     expect(t.lastHud()?.[0]).toBe("Corner 1 of 2");
-    // The first drag moves the model with the hand: that corner fits, the other not yet.
+    // Pointing past the model takes nothing.
+    drag(null, real1);
+    t.update();
+    expect(t.lastHud()?.[0]).toBe("Point at the model");
+    expect(t.mapped(c1).distanceTo(real1)).toBeGreaterThan(0.1);
+    // The first drag moves the model: that corner fits, the other not yet.
     drag(world(c1), real1);
     near(t.mapped(c1), real1);
     expect(t.mapped(c2).distanceTo(real2)).toBeGreaterThan(0.1);
@@ -809,6 +828,19 @@ describe("on-site alignment: fine-tune", () => {
     // The matrix a host measures by takes the model's metres to the room.
     const m = new Matrix4().fromArray(t.ar.alignmentMatrix as number[]);
     near(new Vector3(...c2).applyMatrix4(m), real2, 1e-6);
+    // Where the room is met under the ray, the release lands there (the reticle shows it).
+    const third = t.ar.matchPoints();
+    aimed = world(c1);
+    ray.origin.copy(hand);
+    ray.direction.copy(aimed).sub(hand).normalize();
+    t.ctx.events.emit("selectstart", { ray });
+    const met = real1.clone().add(new Vector3(0, 0, 0.3));
+    t.hitAt(met);
+    expect(t.reticle()!.visible).toBe(true);
+    t.select(ray);
+    near(t.mapped(c1), met, 1e-6);
+    t.ar.cancelMatch();
+    expect(await third).toBe(false);
     // Called off: false, and a trigger pull is a trigger pull again.
     const again = t.ar.matchPoints();
     t.ar.cancelMatch();
@@ -918,7 +950,8 @@ describe("on-site alignment: save and realign", () => {
     t.ar.nudge({ move: [0, 0.1] });
     const saving = t.ar.saveAlignment();
     expect(t.frame.created).toHaveLength(0);
-    // The anchors need an active frame.
+    // The anchors need an active frame (after the store said it has none to use again).
+    await flush();
     t.update();
     await expect(saving).resolves.toBe(true);
     expect(t.frame.created).toHaveLength(2);
@@ -935,6 +968,25 @@ describe("on-site alignment: save and realign", () => {
     expect(t.ar.alignmentState).toBe("saved");
     // The pick anchors are replaced and deleted; the saved ones stay.
     for (const a of anchors) expect(a.delete).toHaveBeenCalledTimes(1);
+    // Saved again after another adjustment: the same two anchors, other model points on them.
+    // Nothing new is asked of the device, so nothing can be left behind on it.
+    t.frame.poses.set(t.frame.created[0].anchor.anchorSpace, fakePose(t.frame.created[0].at));
+    t.frame.poses.set(t.frame.created[1].anchor.anchorSpace, fakePose(t.frame.created[1].at));
+    t.ar.nudge({ move: [0.25, 0] });
+    expect(t.ar.alignmentState).toBe("aligned");
+    const before = t.model.matrixWorld.clone();
+    const again = t.ar.saveAlignment();
+    t.update();
+    await expect(again).resolves.toBe(true);
+    expect(t.frame.created).toHaveLength(2);
+    expect(store.save).toHaveBeenCalledTimes(1);
+    expect(store.repoint).toHaveBeenCalledTimes(1);
+    expect(t.ar.alignmentState).toBe("saved");
+    expect(t.model.matrixWorld.equals(before)).toBe(true);
+    // The points saved are the model's that stand on the two anchors now.
+    const saved = store.repoint.mock.calls[0][1] as number[];
+    near(t.mapped([saved[0], saved[1], saved[2]]), t.frame.created[0].at);
+    near(t.mapped([saved[3], saved[4], saved[5]]), t.frame.created[1].at);
     t.stop();
     for (const c of t.frame.created) expect(c.anchor.delete).not.toHaveBeenCalled();
   });
