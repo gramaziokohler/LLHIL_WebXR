@@ -1,6 +1,9 @@
 import {
   Box3,
+  BufferGeometry,
   Group,
+  Line,
+  LineBasicMaterial,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -8,6 +11,7 @@ import {
   Quaternion,
   RingGeometry,
   type Scene,
+  SphereGeometry,
   Vector3,
 } from "three";
 import { nudgeMatrix, solveTwoPoint } from "./align";
@@ -54,6 +58,7 @@ const MATCH_LINES = [
   "hold the trigger, point at the",
   "real corner and release",
 ];
+const MATCH_HELD_LINES = ["Point at where that corner", "really is, then let go"];
 /** How far a drag reaches for the model, metres. */
 const MATCH_REACH = 60;
 /** Two matched corners closer than this (metres) give no heading. */
@@ -216,6 +221,33 @@ export function createAR(ctx: KitContext): ARController {
   reticle.matrixAutoUpdate = false;
   reticle.visible = false;
 
+  // Matching two points, what the user sees: a dot where the ray meets the model (white while it
+  // only points, green once the trigger took it), a dot where a release would land in the room,
+  // and a line between the two. Drawn over everything, so a corner behind a surface still shows.
+  const dotGeometry = new SphereGeometry(0.03, 12, 8);
+  const over = {
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+    toneMapped: false,
+    fog: false,
+  };
+  const pickMaterial = new MeshBasicMaterial({ color: 0xffffff, ...over });
+  const pickDot = new Mesh(dotGeometry, pickMaterial);
+  const dropDot = new Mesh(dotGeometry, new MeshBasicMaterial({ color: 0x34d399, ...over }));
+  const dragLine = new Line(
+    new BufferGeometry().setFromPoints([new Vector3(), new Vector3()]),
+    new LineBasicMaterial({ color: 0x34d399, ...over }),
+  );
+  const matchMarks = new Group();
+  matchMarks.name = "llhil-webxr-match";
+  for (const o of [pickDot, dropDot, dragLine]) {
+    o.renderOrder = 9999;
+    o.frustumCulled = false;
+    matchMarks.add(o);
+  }
+  matchMarks.visible = false;
+
   const box = new Box3();
   const m1 = new Matrix4();
   const m2 = new Matrix4();
@@ -307,7 +339,9 @@ export function createAR(ctx: KitContext): ARController {
     // The hit-test follows this hand from here on: its ray is the one that drags.
     if (ray.handedness !== "none") preferredHand = ray.handedness;
     match.from = pointOnModel(ray);
-    if (!match.from) showHud("Point at the model", MATCH_LINES);
+    // Taken, or not: said at once, so the user knows whether to keep holding.
+    if (match.from) showHud("Taken: keep holding", MATCH_HELD_LINES);
+    else showHud("Point at the model", MATCH_LINES);
   });
 
   /**
@@ -1032,6 +1066,33 @@ export function createAR(ctx: KitContext): ARController {
     job.resolve(true);
   }
 
+  /** The controller that points for a match: the hand that pulled last, else any. */
+  function matchRay(): RaySource | null {
+    const rays = ctx.input.rays().filter((r) => r.kind === "controller");
+    return rays.find((r) => r.handedness === preferredHand) ?? rays[0] ?? null;
+  }
+
+  /** Each frame of a match: where the ray is on the model, and where a release would land. */
+  function updateMatchMarks(): void {
+    const job = match;
+    const ray = job && !ctx.uiCapture ? matchRay() : null;
+    matchMarks.visible = false;
+    if (!job || !ray) return;
+    const held = job.from;
+    const at = held ?? pointOnModel(ray);
+    if (!at) return;
+    matchMarks.visible = true;
+    // The marks live under the kit's root, which stands still in the room.
+    pickDot.position.copy(at.m).applyMatrix4(correction);
+    pickMaterial.color.setHex(held ? 0x34d399 : 0xffffff);
+    dropDot.visible = dragLine.visible = !!held;
+    if (!held) return;
+    dropDot.position.copy(
+      hasHit ? hitPoint : v2.copy(ray.origin).addScaledVector(ray.direction, held.d),
+    );
+    dragLine.geometry.setFromPoints([pickDot.position, dropDot.position]);
+  }
+
   function cancelMatch(): void {
     const job = match;
     if (!job) return;
@@ -1139,6 +1200,7 @@ export function createAR(ctx: KitContext): ARController {
       if (lostClock >= LOST_HOLD_S) beginPlacing();
     }
     if (wantStand) standPlace(frame, ref);
+    updateMatchMarks();
     updateGamepads(dt);
   }
 
@@ -1337,6 +1399,8 @@ export function createAR(ctx: KitContext): ARController {
     if (onsite) stopOnsite();
     reticle.visible = false;
     reticle.removeFromParent();
+    matchMarks.removeFromParent();
+    matchMarks.visible = false;
     releaseTarget();
     ctx.scene.background = savedBackground;
     ctx.renderer.setClearAlpha(savedClearAlpha);
@@ -1466,6 +1530,7 @@ export function createAR(ctx: KitContext): ARController {
       captureTarget();
       reticle.visible = false;
       ctx.root.add(reticle);
+      ctx.root.add(matchMarks);
 
       void requestViewerSource(generation);
       for (const input of session.inputSources ?? []) addInput(input);
@@ -1492,6 +1557,8 @@ export function createAR(ctx: KitContext): ARController {
       offSelectEnd();
       offSelectStart();
       geometry.dispose();
+      dotGeometry.dispose();
+      dragLine.geometry.dispose();
       material.dispose();
     },
   };

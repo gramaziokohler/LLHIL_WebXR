@@ -833,7 +833,22 @@ describe("on-site alignment: fine-tune", () => {
     aimed = world(c1);
     ray.origin.copy(hand);
     ray.direction.copy(aimed).sub(hand).normalize();
+    // What the user sees: a dot where the ray is on the model while it only points...
+    t.rays.push(ray);
+    const marks = t.root.getObjectByName("llhil-webxr-match")!;
+    const [pickDot, dropDot, line] = marks.children as Mesh[];
+    t.update();
+    expect(marks.visible).toBe(true);
+    near(pickDot.position, aimed);
+    expect((pickDot.material as any).color.getHex()).toBe(0xffffff);
+    expect([dropDot.visible, line.visible]).toEqual([false, false]);
     t.ctx.events.emit("selectstart", { ray });
+    // ...green once the trigger took it, with the message saying to keep holding, and a second
+    // dot and a line to where a release would land.
+    t.update();
+    expect(t.lastHud()?.[0]).toBe("Taken: keep holding");
+    expect((pickDot.material as any).color.getHex()).toBe(0x34d399);
+    expect([dropDot.visible, line.visible]).toEqual([true, true]);
     const met = real1.clone().add(new Vector3(0, 0, 0.3));
     t.hitAt(met);
     expect(t.reticle()!.visible).toBe(true);
@@ -841,6 +856,8 @@ describe("on-site alignment: fine-tune", () => {
     near(t.mapped(c1), met, 1e-6);
     t.ar.cancelMatch();
     expect(await third).toBe(false);
+    t.update();
+    expect(marks.visible).toBe(false);
     // Called off: false, and a trigger pull is a trigger pull again.
     const again = t.ar.matchPoints();
     t.ar.cancelMatch();
