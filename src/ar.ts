@@ -36,8 +36,12 @@ const BUTTON_GRIP = 1;
 /** Anchor drift below this (squared metres) is not worth recomputing the model's matrices. */
 const ANCHOR_EPSILON_SQ = 1e-8;
 
-/** On site, fine-tuning at full deflection: degrees and metres a second (the response is squared). */
-const NUDGE_TURN_DEG_S = 20;
+/**
+ * On site, fine-tuning at full deflection: degrees and metres a second (the response is squared).
+ * The turn is slow: five metres from the user a degree moves the model nine centimetres, so at
+ * this rate what the user looks at moves about as fast as with the move tool.
+ */
+const NUDGE_TURN_DEG_S = 5;
 const NUDGE_MOVE_M_S = 0.5;
 const NUDGE_LIFT_M_S = 0.2;
 /** Restored anchors that give no pose for this long count as not found here. */
@@ -195,8 +199,12 @@ export function createAR(ctx: KitContext): ARController {
    * refuse to delete a handle, so making new ones each time uses up the few it allows.
    */
   let keeper: { a: XRAnchor; b: XRAnchor } | null = null;
-  /** `stand`: place from the head on the next frame that has its pose. */
+  /** `stand`: waiting for the user to look along the view and pull the trigger. */
   let wantStand = false;
+  /** `stand`: a trigger was pressed since the wait began (not the pull that chose a menu row). */
+  let standArmed = false;
+  /** `stand`: that trigger was let go: place from the head on the next frame that has its pose. */
+  let standNow = false;
   /** What the thumbstick does to the placed model. */
   let tool: ARTool = "turn";
   /** The trigger held now moved the height: its release is not a touch of a floor mark. */
@@ -322,8 +330,13 @@ export function createAR(ctx: KitContext): ARController {
     }
     if (ray.handedness !== "none") preferredHand = ray.handedness;
     if (onsite) {
-      if (onsite.start === "stand") touchMark(ray);
-      else onsitePick();
+      if (onsite.start === "stand") {
+        // Waited for: placed from where the head looks now. A controller down at the floor is a
+        // touch of a floor mark instead.
+        const atFloor = ray.kind === "controller" && ray.origin.dot(ctx.up) <= TOUCH_HEIGHT;
+        if (wantStand && standArmed && !atFloor) standNow = true;
+        else touchMark(ray);
+      } else onsitePick();
       return;
     }
     if (phase === "placed") {
@@ -335,6 +348,7 @@ export function createAR(ctx: KitContext): ARController {
   }
   const offSelectEnd = ctx.events.on("selectend", onSelectEnd);
   const offSelectStart = ctx.events.on("selectstart", ({ ray }: { ray: RaySource }) => {
+    if (active && wantStand && !ctx.uiCapture) standArmed = true;
     if (!match || !active || ray.kind !== "controller" || ctx.uiCapture) return;
     // The hit-test follows this hand from here on: its ray is the one that drags.
     if (ray.handedness !== "none") preferredHand = ray.handedness;
@@ -908,8 +922,12 @@ export function createAR(ctx: KitContext): ARController {
         showHud("Where do you stand?", [MENU_HINT]);
         return;
       }
+      // Not at once: the head is turned to a panel when a menu row asks for this. The model is
+      // placed when the user looks along the view and pulls the trigger.
       wantStand = true;
-      showHud("Stand on the point, face its direction");
+      standArmed = false;
+      standNow = false;
+      showHud("Look along the view", ["Then pull the trigger"]);
     } else setState("pick-a");
   }
 
@@ -932,6 +950,7 @@ export function createAR(ctx: KitContext): ARController {
     const f = new Vector3();
     if (!pose || !flatForward(pose.transform.matrix, f)) return;
     wantStand = false;
+    standNow = false;
     const p = pose.transform.position;
     const ra = new Vector3(p.x, p.y, p.z);
     // The floor is the origin's height where the space has one; else an eye height below the head.
@@ -1199,7 +1218,7 @@ export function createAR(ctx: KitContext): ARController {
       lostClock += dt;
       if (lostClock >= LOST_HOLD_S) beginPlacing();
     }
-    if (wantStand) standPlace(frame, ref);
+    if (wantStand && standNow) standPlace(frame, ref);
     updateMatchMarks();
     updateGamepads(dt);
   }

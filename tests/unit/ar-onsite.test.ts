@@ -291,6 +291,11 @@ function setup(o: SetupOptions = {}) {
   function select(ray: RaySource = tapRay) {
     ctx.events.emit("selectend", { ray });
   }
+  /** A whole trigger pull: pressed, then let go. */
+  function pull(ray: RaySource = tapRay) {
+    ctx.events.emit("selectstart", { ray });
+    ctx.events.emit("selectend", { ray });
+  }
   /** Points at A and at B and pulls the trigger on each, as a user does. */
   async function pick(a = REAL_A, b = REAL_B, anchors?: [FakeAnchor, FakeAnchor]) {
     const make = (i: 0 | 1) => (anchors ? () => Promise.resolve(anchors[i]) : undefined);
@@ -329,6 +334,7 @@ function setup(o: SetupOptions = {}) {
     update,
     hitAt,
     select,
+    pull,
     pick,
     lastHud,
     hudShown,
@@ -572,19 +578,19 @@ describe("on-site alignment: fine-tune", () => {
     t.rays.push(ray);
     const axes = (ray.gamepad as any).axes as number[];
 
-    // Full right for a tenth of a second at 20 degrees a second: clockwise seen from above.
+    // Full right for a tenth of a second at 5 degrees a second: clockwise seen from above.
     axes[2] = 1;
     t.update(0.1);
     near(t.mapped(ALIGNMENT.a), REAL_A);
-    near(t.mapped(ALIGNMENT.b), turnedB(-2));
+    near(t.mapped(ALIGNMENT.b), turnedB(-0.5));
     // Inside the dead zone nothing happens.
     axes[2] = 0.1;
     t.update(1);
-    near(t.mapped(ALIGNMENT.b), turnedB(-2));
+    near(t.mapped(ALIGNMENT.b), turnedB(-0.5));
     // Half way, to the left: a quarter of the speed (the response is squared).
     axes[2] = -0.575;
     t.update(0.1);
-    near(t.mapped(ALIGNMENT.b), turnedB(-1.5));
+    near(t.mapped(ALIGNMENT.b), turnedB(-0.375));
     near(t.mapped(ALIGNMENT.a), REAL_A);
   });
 
@@ -620,7 +626,18 @@ describe("on-site alignment: fine-tune", () => {
     let viewer: ReturnType<typeof pose> | null = null;
     (t.frame as any).getViewerPose = () => viewer;
     await t.start({ ...ALIGNMENT, start: "stand" });
-    // No head pose yet: nothing placed, no marks asked for.
+    // Not placed at once: the user looks along the view first, then pulls the trigger.
+    viewer = pose(5, 5, 45);
+    t.update();
+    expect(t.ar.alignmentState).toBe(null);
+    expect(t.lastHud()).toEqual(["Look along the view", ["Then pull the trigger"]]);
+    // A release alone (the pull that chose a menu row) is not it.
+    t.select();
+    t.update();
+    expect(t.ar.alignmentState).toBe(null);
+    // No head pose at the pull: placed on the first frame that has one.
+    viewer = null;
+    t.pull();
     t.update();
     expect(t.ar.alignmentState).toBe(null);
     // Standing at (2, 3), looking along -X: A on the floor below, B four metres ahead.
@@ -630,10 +647,14 @@ describe("on-site alignment: fine-tune", () => {
     near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
     near(t.mapped(ALIGNMENT.b), new Vector3(-2, 0, 3));
     // Placing again (the host's menu row): from where the user stands now.
-    viewer = pose(0, 0, 0);
+    // The head is turned to the menu when the row is chosen: nothing moves until the pull.
+    viewer = pose(0, 0, 70);
     t.ar.realign();
     t.update();
-    // Placed on the next frame.
+    t.update();
+    expect(t.model.visible).toBe(false);
+    viewer = pose(0, 0, 0);
+    t.pull();
     t.update();
     near(t.mapped(ALIGNMENT.a), new Vector3(0, 0, 0));
     near(t.mapped(ALIGNMENT.b), new Vector3(0, 0, -4));
@@ -650,6 +671,8 @@ describe("on-site alignment: fine-tune", () => {
     };
     (t.frame as any).getViewerPose = () => viewer;
     await t.start({ ...ALIGNMENT, start: "stand" });
+    t.update();
+    t.pull();
     t.update();
     near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
     const ray = gamepadRay("r");
@@ -762,6 +785,9 @@ describe("on-site alignment: fine-tune", () => {
     expect(t.model.visible).toBe(false);
     expect(t.lastHud()).toEqual(["Where do you stand?", ["Menu: B or Y"]]);
     t.ar.realign();
+    t.update();
+    expect(t.ar.alignmentState).toBe(null);
+    t.pull();
     t.update();
     expect(t.ar.alignmentState).toBe("aligned");
     near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
