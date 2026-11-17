@@ -249,6 +249,8 @@ export interface ARController extends KitModule {
   readonly placement: ARPlacement | null;
   setPlacement(placement: ARPlacement): void;
   tool: ARTool;
+  /** The sticks and the save button leave the placed model alone. */
+  locked: boolean;
 }
 
 /** Result of the two-point solve (src/align.ts). */

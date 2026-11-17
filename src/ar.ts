@@ -44,6 +44,8 @@ const ANCHOR_EPSILON_SQ = 1e-8;
 const NUDGE_TURN_DEG_S = 5;
 const NUDGE_MOVE_M_S = 0.5;
 const NUDGE_LIFT_M_S = 0.2;
+/** On site: the saved model follows its anchors once they stand this far from where they did. */
+const FOLLOW_STEP_M = 0.01;
 /** Restored anchors that give no pose for this long count as not found here. */
 const RESTORE_TIMEOUT_S = 3;
 /** How long `lost` stays on the panel before picking starts. */
@@ -207,6 +209,15 @@ export function createAR(ctx: KitContext): ARController {
   let standNow = false;
   /** What the thumbstick does to the placed model. */
   let tool: ARTool = "turn";
+  /** The host locked the placement: the sticks and the save button leave it alone. */
+  let locked = false;
+  /**
+   * Where the alignment's two anchors stood when the model was last placed by them. The model
+   * follows them from there: the room's coordinates may jump (the device re-centres them when
+   * the user leaves its boundary), the anchors stay on the real points.
+   */
+  let followA: Vector3 | null = null;
+  let followB: Vector3 | null = null;
   /** The trigger held now moved the height: its release is not a touch of a floor mark. */
   let liftHeld = false;
   /** Why the last save could not be kept on the device (the `kept` state's panel says it). */
@@ -1155,10 +1166,10 @@ export function createAR(ctx: KitContext): ARController {
       const down = !!ray.gamepad?.buttons?.[BUTTON_SAVE]?.pressed;
       const was = pressed.get(key) ?? false;
       pressed.set(key, down);
-      if (down && !was && !ctx.uiCapture) void saveAlignment();
+      if (down && !was && !ctx.uiCapture && !locked) void saveAlignment();
     }
     // A panel has the controllers: the sticks are the panel's.
-    if (!isPlaced() || ctx.uiCapture) return;
+    if (!isPlaced() || ctx.uiCapture || locked) return;
     // Either hand's stick drives the tool; the grip held is a shortcut for move, the trigger held
     // for height (forward on the stick is negative).
     for (const ray of controllers) {
@@ -1219,8 +1230,44 @@ export function createAR(ctx: KitContext): ARController {
       if (lostClock >= LOST_HOLD_S) beginPlacing();
     }
     if (wantStand && standNow) standPlace(frame, ref);
+    followAnchors(frame, ref);
     updateMatchMarks();
     updateGamepads(dt);
+  }
+
+  /**
+   * Saved, or held for the session, and not moved since: the model stays on its two anchors.
+   * Only a real jump moves it (FOLLOW_STEP_M), so the anchors' own small tremble does not.
+   */
+  function followAnchors(frame: XRFrame, ref: XRReferenceSpace): void {
+    const holds = (state === "saved" || state === "kept") && !nudged && !pendingSave;
+    if (!holds || !anchorA || !anchorB) {
+      followA = followB = null;
+      return;
+    }
+    const pa = anchorPosition(frame, ref, anchorA);
+    const pb = anchorPosition(frame, ref, anchorB);
+    if (!pa || !pb) return;
+    if (!followA || !followB) {
+      followA = pa;
+      followB = pb;
+      return;
+    }
+    if (pa.distanceTo(followA) < FOLLOW_STEP_M && pb.distanceTo(followB) < FOLLOW_STEP_M) return;
+    // The points that stood on the anchors then stand on them again.
+    const wa = followA.clone().applyMatrix4(m2.copy(correction).invert());
+    const wb = followB.clone().applyMatrix4(m2);
+    let solution: ReturnType<typeof solveTwoPoint>;
+    try {
+      solution = solveTwoPoint(wa, wb, pa, pb, ctx.up);
+    } catch {
+      return;
+    }
+    followA = pa;
+    followB = pb;
+    correction.copy(solution.matrix);
+    realA.copy(pivotA());
+    applyPlacement();
   }
 
   /**
@@ -1371,11 +1418,22 @@ export function createAR(ctx: KitContext): ARController {
       ok = false;
     }
     if (ok !== true) {
+      const current = token === pickToken && active;
       if (fresh) {
-        a.delete();
-        b.delete();
+        if (current && rev === revision) {
+          // Not kept on the device, but the two anchors hold the model for this session: it
+          // stays on the real points when the room's coordinates jump.
+          deleteAnchor(anchorA);
+          deleteAnchor(anchorB);
+          anchorA = a;
+          anchorB = b;
+          nudged = false;
+        } else {
+          a.delete();
+          b.delete();
+        }
       }
-      if (token === pickToken && active) saveUnavailable(typeof ok === "string" ? ok : "not kept");
+      if (current) saveUnavailable(typeof ok === "string" ? ok : "not kept");
       return false;
     }
     persistent.add(a);
@@ -1457,6 +1515,12 @@ export function createAR(ctx: KitContext): ARController {
     },
     get alignmentNote() {
       return active && state === "kept" ? keptWhy : null;
+    },
+    get locked(): boolean {
+      return locked;
+    },
+    set locked(next: boolean) {
+      locked = next === true;
     },
     get tool(): ARTool {
       return tool;

@@ -1070,6 +1070,90 @@ describe("on-site alignment: save and realign", () => {
     expect(t.lastHud()?.[1][0]).toBe("Why: not kept");
   });
 
+  it("the saved model stays on its anchors when the room's coordinates jump", async () => {
+    const a = fakeAnchor();
+    const b = fakeAnchor();
+    store.supported.mockReturnValue(true);
+    store.restore.mockResolvedValue({ a, b });
+    const t = setup();
+    await t.start();
+    t.frame.poses.set(a.anchorSpace, fakePose(REAL_A));
+    t.frame.poses.set(b.anchorSpace, fakePose(REAL_B));
+    t.update(1);
+    expect(t.ar.alignmentState).toBe("saved");
+    t.update();
+    // The anchors' own tremble (millimetres) moves nothing.
+    const before = t.model.matrixWorld.clone();
+    t.frame.poses.set(a.anchorSpace, fakePose(REAL_A.clone().add(new Vector3(0.003, 0, 0))));
+    t.update();
+    expect(t.model.matrixWorld.equals(before)).toBe(true);
+    // The device re-centred the room (the user left its boundary): both anchors stand elsewhere
+    // in its coordinates, turned and moved. The model goes with them.
+    const jump = new Matrix4().makeRotationY(40 * DEG).setPosition(3, 0, -2);
+    const ja = REAL_A.clone().applyMatrix4(jump);
+    const jb = REAL_B.clone().applyMatrix4(jump);
+    t.frame.poses.set(a.anchorSpace, fakePose(ja));
+    t.frame.poses.set(b.anchorSpace, fakePose(jb));
+    t.update();
+    near(t.mapped(ALIGNMENT.a), ja);
+    near(t.mapped(ALIGNMENT.b), jb);
+    expect(t.ar.alignmentState).toBe("saved");
+    // Not tracked for a moment: it stays where it is.
+    t.frame.poses.delete(a.anchorSpace);
+    t.update();
+    near(t.mapped(ALIGNMENT.a), ja);
+  });
+
+  it("a placement the device could not keep still holds on its anchors for the session", async () => {
+    store.supported.mockReturnValue(true);
+    store.save.mockResolvedValue("handle refused" as never);
+    const t = setup();
+    await t.start();
+    t.update(2);
+    await t.pick(REAL_A, REAL_B, [fakeAnchor(), fakeAnchor()]);
+    t.ar.nudge({ move: [0, 0.1] });
+    const saving = t.ar.saveAlignment();
+    await flush();
+    t.update();
+    await expect(saving).resolves.toBe(false);
+    expect(t.ar.alignmentState).toBe("kept");
+    // The two anchors made for the save are kept in hand.
+    expect(t.frame.created).toHaveLength(2);
+    for (const c of t.frame.created) expect(c.anchor.delete).not.toHaveBeenCalled();
+    const [ca, cb] = t.frame.created;
+    t.frame.poses.set(ca.anchor.anchorSpace, fakePose(ca.at));
+    t.frame.poses.set(cb.anchor.anchorSpace, fakePose(cb.at));
+    t.update();
+    const shift = new Vector3(1, 0, 2);
+    t.frame.poses.set(ca.anchor.anchorSpace, fakePose(ca.at.clone().add(shift)));
+    t.frame.poses.set(cb.anchor.anchorSpace, fakePose(cb.at.clone().add(shift)));
+    t.update();
+    near(t.mapped(ALIGNMENT.a), ca.at.clone().add(shift));
+    near(t.mapped(ALIGNMENT.b), cb.at.clone().add(shift));
+  });
+
+  it("locked: the sticks and the save button leave the placed model alone", async () => {
+    store.supported.mockReturnValue(true);
+    const t = setup();
+    await t.start();
+    t.update(2);
+    await t.pick();
+    const ray = gamepadRay("r");
+    t.rays.push(ray);
+    t.ar.locked = true;
+    (ray.gamepad as any).axes[2] = 1;
+    (ray.gamepad as any).buttons[4].pressed = true;
+    const before = t.model.matrixWorld.clone();
+    t.update(0.5);
+    expect(t.model.matrixWorld.equals(before)).toBe(true);
+    expect(t.ar.alignmentState).toBe("aligned");
+    expect(store.save).not.toHaveBeenCalled();
+    t.ar.locked = false;
+    (ray.gamepad as any).buttons[4].pressed = false;
+    t.update(0.1);
+    expect(t.model.matrixWorld.equals(before)).toBe(false);
+  });
+
   it("realign() asks for the marks again, dropping the anchors in use but not the saved ones", async () => {
     store.supported.mockReturnValue(true);
     const t = setup();

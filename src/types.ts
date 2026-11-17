@@ -468,6 +468,11 @@ export interface XRKit {
   takePoint(): Promise<[number, number, number] | null>;
   /** AR: what the thumbstick does to the placed model. Default `"turn"`. */
   tool: ARTool;
+  /**
+   * AR on site: while true the thumbsticks and the save button leave the placed model alone, so
+   * a visitor's hand on a controller moves nothing. Default false.
+   */
+  placementLocked: boolean;
   /** AR on a table: where the placed model stands, or null until it is placed. */
   readonly placement: ARPlacement | null;
   /** AR on a table: place the model (shown if it was not yet), e.g. as another device has it. */

@@ -286,6 +286,12 @@ export function createXRKit(options: XRKitOptions): XRKit {
     get placement() {
       return ctx.mode === "ar" ? ar.placement : null;
     },
+    get placementLocked() {
+      return ar.locked;
+    },
+    set placementLocked(on) {
+      ar.locked = on;
+    },
     get tool() {
       return ar.tool;
     },
