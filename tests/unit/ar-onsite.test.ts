@@ -189,7 +189,8 @@ const ALIGNMENT: ARAlignment = {
 };
 const REAL_A = new Vector3(1, 0, 1);
 const REAL_B = new Vector3(5, 0, 1);
-const HINTS = ["Stick: turn", "Menu: B or Y"];
+const STRIP = "[ TURN ]  MOVE  HEIGHT";
+const HINTS = ["Press the stick: next", "A or X: save, error 0.0 cm", "Menu: B or Y"];
 const AGAIN = "Menu: B or Y";
 
 interface SetupOptions {
@@ -382,7 +383,7 @@ describe("on-site alignment: picking", () => {
 
     t.update();
     expect(t.reticle()!.visible).toBe(false);
-    expect(t.lastHud()).toEqual(["Adjust, then save, error 0.0 cm", HINTS]);
+    expect(t.lastHud()).toEqual([STRIP, HINTS]);
     expect(t.states).toEqual([
       { state: "pick-a", errorM: null, restored: false },
       { state: "pick-b", errorM: null, restored: false },
@@ -397,7 +398,7 @@ describe("on-site alignment: picking", () => {
     const last = t.states.at(-1)!;
     expect(last.state).toBe("aligned");
     expect(last.errorM).toBeCloseTo(0.02, 9);
-    expect(t.lastHud()?.[0]).toBe("Adjust, then save, error 2.0 cm");
+    expect(t.lastHud()?.[1][1]).toBe("A or X: save, error 2.0 cm");
   });
 
   it("aligns a millimetre model at 1:1", async () => {
@@ -761,13 +762,33 @@ describe("on-site alignment: fine-tune", () => {
     t.update(0.1);
     near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(0.05, 0.02, -0.05)));
     t.update();
-    expect(t.lastHud()).toEqual([
-      "Adjust, then save, error 0.0 cm",
-      ["Stick: move", "Menu: B or Y"],
-    ]);
+    expect(t.lastHud()).toEqual(["TURN  [ MOVE ]  HEIGHT", HINTS]);
     // Not a tool: ignored.
     (t.ar as any).tool = "spin";
     expect(t.ar.tool).toBe("move");
+    // The stick pressed down steps to the next tool, once per press, and round again.
+    axes[2] = 0;
+    axes[3] = 0;
+    const stick = (ray.gamepad as any).buttons[3];
+    stick.pressed = true;
+    t.update();
+    expect(t.ar.tool).toBe("height");
+    t.update();
+    expect(t.ar.tool).toBe("height");
+    t.update();
+    expect(t.lastHud()?.[0]).toBe("TURN  MOVE  [ HEIGHT ]");
+    stick.pressed = false;
+    t.update();
+    stick.pressed = true;
+    t.update();
+    expect(t.ar.tool).toBe("turn");
+    // Locked: the press does nothing.
+    stick.pressed = false;
+    t.update();
+    t.ar.locked = true;
+    stick.pressed = true;
+    t.update();
+    expect(t.ar.tool).toBe("turn");
   });
 
   it("start: stand with hold waits for realign() before it places", async () => {
@@ -791,103 +812,6 @@ describe("on-site alignment: fine-tune", () => {
     t.update();
     expect(t.ar.alignmentState).toBe("aligned");
     near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
-  });
-
-  it("matchPoints: two drags, each from the model corner pointed at to the real corner pointed at, place the model exactly", async () => {
-    const t = setup();
-    await t.start();
-    await t.pick();
-    // Off by a turn and a slide: what placing by eye leaves.
-    t.ar.nudge({ turnDeg: 7, move: [0.3, -0.2], lift: 0.04 });
-    const world = (p: [number, number, number]) => t.mapped(p);
-    // Two corners of the model, and where they really are (the placement before the nudge).
-    const c1: [number, number, number] = [5, 0, 0];
-    const c2: [number, number, number] = [5, 0, -4];
-    const real1 = REAL_A.clone();
-    const real2 = REAL_B.clone();
-    const ray = gamepadRay("r");
-    // The model under the ray: the corner the test aims at, as it stands in the room now.
-    let aimed: Vector3 | null = null;
-    (t.ctx as any).raycast = (origin: Vector3) =>
-      aimed ? { point: aimed.clone(), distance: aimed.distanceTo(origin) } : null;
-    const hand = new Vector3(0, 1.2, 0);
-    /** Points at a model corner and pulls; then points at the real corner, as far along the ray, and lets go. */
-    const drag = (corner: Vector3 | null, to: Vector3) => {
-      aimed = corner;
-      ray.origin.copy(hand);
-      if (corner) ray.direction.copy(corner).sub(hand).normalize();
-      t.ctx.events.emit("selectstart", { ray });
-      // No real surface met (no hit-test in this fake): the release lands as far along the ray.
-      const d = corner ? corner.distanceTo(hand) : 1;
-      ray.direction.set(0, -1, 0);
-      ray.origin.copy(to).addScaledVector(ray.direction, -d);
-      t.select(ray);
-    };
-    // No real surface under the ray from here on (the picks' hits are gone).
-    t.frame.results.clear();
-    const done = t.ar.matchPoints();
-    t.update();
-    expect(t.lastHud()?.[0]).toBe("Corner 1 of 2");
-    // Pointing past the model takes nothing.
-    drag(null, real1);
-    t.update();
-    expect(t.lastHud()?.[0]).toBe("Point at the model");
-    expect(t.mapped(c1).distanceTo(real1)).toBeGreaterThan(0.1);
-    // The first drag moves the model: that corner fits, the other not yet.
-    drag(world(c1), real1);
-    near(t.mapped(c1), real1);
-    expect(t.mapped(c2).distanceTo(real2)).toBeGreaterThan(0.1);
-    t.update();
-    expect(t.lastHud()?.[0]).toBe("Corner 2 of 2");
-    // A second corner too close to the first gives no heading: asked again.
-    drag(world([5, 0, -0.2]), real1.clone().add(new Vector3(0.2, 0, 0)));
-    t.update();
-    expect(t.lastHud()?.[0]).toBe("Too close to the first");
-    // The second drag: both corners fit.
-    drag(world(c2), real2);
-    expect(await done).toBe(true);
-    near(t.mapped(c1), real1, 1e-6);
-    near(t.mapped(c2), real2, 1e-6);
-    expect(t.ar.alignmentState).toBe("aligned");
-    t.update();
-    expect(t.lastHud()?.[0]).toBe("Adjust, then save, error 0.0 cm");
-    // The matrix a host measures by takes the model's metres to the room.
-    const m = new Matrix4().fromArray(t.ar.alignmentMatrix as number[]);
-    near(new Vector3(...c2).applyMatrix4(m), real2, 1e-6);
-    // Where the room is met under the ray, the release lands there (the reticle shows it).
-    const third = t.ar.matchPoints();
-    aimed = world(c1);
-    ray.origin.copy(hand);
-    ray.direction.copy(aimed).sub(hand).normalize();
-    // What the user sees: a dot where the ray is on the model while it only points...
-    t.rays.push(ray);
-    const marks = t.root.getObjectByName("llhil-webxr-match")!;
-    const [pickDot, dropDot, line] = marks.children as Mesh[];
-    t.update();
-    expect(marks.visible).toBe(true);
-    near(pickDot.position, aimed);
-    expect((pickDot.material as any).color.getHex()).toBe(0xffffff);
-    expect([dropDot.visible, line.visible]).toEqual([false, false]);
-    t.ctx.events.emit("selectstart", { ray });
-    // ...green once the trigger took it, with the message saying to keep holding, and a second
-    // dot and a line to where a release would land.
-    t.update();
-    expect(t.lastHud()?.[0]).toBe("Taken: keep holding");
-    expect((pickDot.material as any).color.getHex()).toBe(0x34d399);
-    expect([dropDot.visible, line.visible]).toEqual([true, true]);
-    const met = real1.clone().add(new Vector3(0, 0, 0.3));
-    t.hitAt(met);
-    expect(t.reticle()!.visible).toBe(true);
-    t.select(ray);
-    near(t.mapped(c1), met, 1e-6);
-    t.ar.cancelMatch();
-    expect(await third).toBe(false);
-    t.update();
-    expect(marks.visible).toBe(false);
-    // Called off: false, and a trigger pull is a trigger pull again.
-    const again = t.ar.matchPoints();
-    t.ar.cancelMatch();
-    expect(await again).toBe(false);
   });
 
   it("nudge() turns about A and moves in the user's frame", async () => {

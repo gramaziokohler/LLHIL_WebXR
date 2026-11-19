@@ -1,9 +1,6 @@
 import {
   Box3,
-  BufferGeometry,
   Group,
-  Line,
-  LineBasicMaterial,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -11,7 +8,6 @@ import {
   Quaternion,
   RingGeometry,
   type Scene,
-  SphereGeometry,
   Vector3,
 } from "three";
 import { nudgeMatrix, solveTwoPoint } from "./align";
@@ -52,23 +48,14 @@ const RESTORE_TIMEOUT_S = 3;
 const LOST_HOLD_S = 1.5;
 /** xr-standard gamepad buttons: A/X saves, B/Y aligns again. */
 const BUTTON_SAVE = 4;
+/** xr-standard: the thumbstick pressed down. It steps to the next tool. */
+const BUTTON_STICK = 3;
 /** The panel's lines are short: a headset cuts what does not fit its width. */
 const MENU_HINT = "Menu: B or Y";
 /** The kept anchors closer than this (metres) give no heading: new ones are made. */
 const REPOINT_MIN_SPAN = 0.1;
 /** Frames a save waits for the kept anchors' poses before it makes new ones. */
 const REPOINT_FRAMES = 90;
-/** Matching two points: what to do, in lines that fit the panel. */
-const MATCH_LINES = [
-  "Point at a corner of the model,",
-  "hold the trigger, point at the",
-  "real corner and release",
-];
-const MATCH_HELD_LINES = ["Point at where that corner", "really is, then let go"];
-/** How far a drag reaches for the model, metres. */
-const MATCH_REACH = 60;
-/** Two matched corners closer than this (metres) give no heading. */
-const MATCH_MIN_SPAN = 0.5;
 /** How long a message that says something is done stays in view, seconds. */
 const DONE_SECONDS = 4;
 
@@ -105,18 +92,6 @@ export function createAR(ctx: KitContext): ARController {
   let phase: Phase = "aiming";
   /** A host waits for the next trigger pull of a controller (takePoint). */
   let pointTaker: ((point: [number, number, number] | null) => void) | null = null;
-  /**
-   * On site, matching two points (matchPoints): the drag in hand (where the trigger went down),
-   * and after the first drag its pair, the model point and the real point it was put on.
-   */
-  let match: {
-    resolve: (ok: boolean) => void;
-    /** The model point the ray met when the trigger went down (model metres), and how far along it. */
-    from: { m: Vector3; d: number } | null;
-    pin: { m: Vector3; r: Vector3 } | null;
-  } | null = null;
-  /** Placed by two matched points: the panel shows how well they fit. */
-  let matched = false;
 
   // What is transformed: the model, or the group standing in for the scene.
   let target: Object3D | null = null;
@@ -240,33 +215,6 @@ export function createAR(ctx: KitContext): ARController {
   reticle.matrixAutoUpdate = false;
   reticle.visible = false;
 
-  // Matching two points, what the user sees: a dot where the ray meets the model (white while it
-  // only points, green once the trigger took it), a dot where a release would land in the room,
-  // and a line between the two. Drawn over everything, so a corner behind a surface still shows.
-  const dotGeometry = new SphereGeometry(0.03, 12, 8);
-  const over = {
-    depthTest: false,
-    depthWrite: false,
-    transparent: true,
-    toneMapped: false,
-    fog: false,
-  };
-  const pickMaterial = new MeshBasicMaterial({ color: 0xffffff, ...over });
-  const pickDot = new Mesh(dotGeometry, pickMaterial);
-  const dropDot = new Mesh(dotGeometry, new MeshBasicMaterial({ color: 0x34d399, ...over }));
-  const dragLine = new Line(
-    new BufferGeometry().setFromPoints([new Vector3(), new Vector3()]),
-    new LineBasicMaterial({ color: 0x34d399, ...over }),
-  );
-  const matchMarks = new Group();
-  matchMarks.name = "llhil-webxr-match";
-  for (const o of [pickDot, dropDot, dragLine]) {
-    o.renderOrder = 9999;
-    o.frustumCulled = false;
-    matchMarks.add(o);
-  }
-  matchMarks.visible = false;
-
   const box = new Box3();
   const m1 = new Matrix4();
   const m2 = new Matrix4();
@@ -327,18 +275,6 @@ export function createAR(ctx: KitContext): ARController {
     }
     // A trigger a panel took is the panel's.
     if (ctx.uiCapture) return;
-    // Matching two points: the release of a drag that began on a corner of the model.
-    if (match && ray.kind === "controller") {
-      // Where the ray meets the room now (the reticle); nothing real met: as far along the ray as
-      // the model point was.
-      if (match.from) {
-        const to = hasHit
-          ? hitPoint.clone()
-          : ray.origin.clone().addScaledVector(ray.direction, match.from.d);
-        matchDrop(match.from.m, to);
-      }
-      return;
-    }
     if (ray.handedness !== "none") preferredHand = ray.handedness;
     if (onsite) {
       if (onsite.start === "stand") {
@@ -358,35 +294,9 @@ export function createAR(ctx: KitContext): ARController {
     if (hasHit) place();
   }
   const offSelectEnd = ctx.events.on("selectend", onSelectEnd);
-  const offSelectStart = ctx.events.on("selectstart", ({ ray }: { ray: RaySource }) => {
+  const offSelectStart = ctx.events.on("selectstart", () => {
     if (active && wantStand && !ctx.uiCapture) standArmed = true;
-    if (!match || !active || ray.kind !== "controller" || ctx.uiCapture) return;
-    // The hit-test follows this hand from here on: its ray is the one that drags.
-    if (ray.handedness !== "none") preferredHand = ray.handedness;
-    match.from = pointOnModel(ray);
-    // Taken, or not: said at once, so the user knows whether to keep holding.
-    if (match.from) showHud("Taken: keep holding", MATCH_HELD_LINES);
-    else showHud("Point at the model", MATCH_LINES);
   });
-
-  /**
-   * Where a controller's ray meets the model as it stands in the room: the point in the model's
-   * metres (where it stays whatever the placement does) and its distance along the ray.
-   */
-  function pointOnModel(ray: RaySource): { m: Vector3; d: number } | null {
-    const inverse = m2.copy(correction).invert();
-    const k = ctx.options.metresPerUnit;
-    if (ctx.hostRaycast) {
-      // The host's raycast knows the model at rest: the ray goes there (the placement turns and
-      // moves, so a direction only turns), and the answer comes back in the model's metres.
-      const origin = ray.origin.clone().applyMatrix4(inverse).divideScalar(k);
-      const direction = ray.direction.clone().transformDirection(inverse);
-      const hit = ctx.raycast(origin, direction, MATCH_REACH / k, "all");
-      return hit ? { m: hit.point.clone().multiplyScalar(k), d: hit.distance * k } : null;
-    }
-    const hit = ctx.raycast(ray.origin, ray.direction, MATCH_REACH, "all");
-    return hit ? { m: hit.point.clone().applyMatrix4(inverse), d: hit.distance } : null;
-  }
 
   async function requestViewerSource(gen: number): Promise<void> {
     const s = session;
@@ -559,6 +469,7 @@ export function createAR(ctx: KitContext): ARController {
    */
   function updateSticks(dt: number): void {
     if (phase === "aiming" || ctx.uiCapture) return;
+    stepTool(["turn", "move"]);
     let moved = false;
     for (const ray of ctx.input.rays()) {
       if (ray.kind !== "controller" || !ray.gamepad) continue;
@@ -599,10 +510,9 @@ export function createAR(ctx: KitContext): ARController {
   }
 
   function updateReticle(): void {
-    // On site: while a mark is asked for, and while a matching drag is held (where a release lands).
+    // On site: while a mark is asked for.
     reticle.visible =
-      hasHit &&
-      (onsite ? state === "pick-a" || state === "pick-b" || !!match?.from : phase !== "placed");
+      hasHit && (onsite ? state === "pick-a" || state === "pick-b" : phase !== "placed");
     if (!reticle.visible) return;
     // The hit pose is in world coordinates; the reticle lives under the kit's root.
     ctx.root.updateWorldMatrix(true, false);
@@ -700,15 +610,42 @@ export function createAR(ctx: KitContext): ARController {
   }
 
   function placedHud(): void {
-    const error = onsite?.start === "stand" && !matched ? "" : `, error ${cm(errorM)}`;
+    const error = onsite?.start === "stand" ? "" : `, error ${cm(errorM)}`;
     if (state === "saved") {
       showHud(`${restored ? "Restored" : "Saved"}${error}`, [MENU_HINT], DONE_SECONDS);
     } else if (state === "kept") {
       // The short reason here; all of it in alignmentNote, for a host with room to show it.
       showHud("Placed, not saved", [`Why: ${keptWhy.split(":")[0]}`, MENU_HINT], 2 * DONE_SECONDS);
     } else {
-      showHud(`Adjust, then save${error}`, [`Stick: ${tool}`, MENU_HINT]);
+      toolHud(error);
     }
+  }
+
+  /** The three tools in view, the stick's own in brackets, with what switches and what saves. */
+  function toolHud(error = "", seconds = 0): void {
+    const strip = (["turn", "move", "height"] as const)
+      .map((t) => (t === tool ? `[ ${t.toUpperCase()} ]` : t.toUpperCase()))
+      .join("  ");
+    showHud(strip, ["Press the stick: next", `A or X: save${error}`, MENU_HINT], seconds);
+  }
+
+  /**
+   * The thumbstick pressed down steps to the next tool (`tools` in order), on either hand, so
+   * the menu is not needed to go from turning to moving. True when it did.
+   */
+  function stepTool(tools: readonly ARTool[]): boolean {
+    let stepped = false;
+    for (const ray of ctx.input.rays()) {
+      if (ray.kind !== "controller" || !ray.gamepad) continue;
+      const key = `${ray.id}:${BUTTON_STICK}`;
+      const down = !!ray.gamepad.buttons?.[BUTTON_STICK]?.pressed;
+      const was = pressed.get(key) ?? false;
+      pressed.set(key, down);
+      if (!down || was || stepped) continue;
+      tool = tools[(tools.indexOf(tool) + 1) % tools.length];
+      stepped = true;
+    }
+    return stepped;
   }
 
   function setState(next: AlignmentState, notice?: string): void {
@@ -924,8 +861,6 @@ export function createAR(ctx: KitContext): ARController {
   /** Nothing to restore: the marks, or (`stand`) the model placed from where the user stands. */
   function beginPlacing(asked = false): void {
     touched = null;
-    matched = false;
-    cancelMatch();
     if (onsite?.start === "stand") {
       touchA = null;
       // A host that lets the user choose where they stand first (hold) places on its realign().
@@ -1052,85 +987,6 @@ export function createAR(ctx: KitContext): ARController {
     setState("aligned");
   }
 
-  /**
-   * One drag of matching two points: the model point `m` (model metres) goes to `to`. The first
-   * drag moves the model with the hand; the second, of another corner, turns and seats it so both
-   * corners fit (the two-point solve), and the panel says how well.
-   */
-  function matchDrop(m: Vector3, to: Vector3): void {
-    const job = match;
-    if (!job || !isPlaced()) return;
-    job.from = null;
-    if (!job.pin) {
-      // Where that model point stands now, to where it belongs.
-      const from = v2.copy(m).applyMatrix4(correction);
-      correction.premultiply(m1.makeTranslation(to.x - from.x, to.y - from.y, to.z - from.z));
-      applyPlacement();
-      job.pin = { m, r: to.clone() };
-      touched = null;
-      nudged = true;
-      revision++;
-      setState("aligned");
-      showHud("Corner 2 of 2", MATCH_LINES);
-      return;
-    }
-    const flat = (v: Vector3) => v.addScaledVector(ctx.up, -v.dot(ctx.up)).length();
-    if (
-      flat(v1.subVectors(m, job.pin.m)) < MATCH_MIN_SPAN ||
-      flat(v1.subVectors(to, job.pin.r)) < MATCH_MIN_SPAN
-    ) {
-      showHud("Too close to the first", MATCH_LINES);
-      return;
-    }
-    modelA.copy(job.pin.m);
-    modelB.copy(m);
-    if (!solveAndPlace(job.pin.r, to)) return;
-    match = null;
-    matched = true;
-    touched = null;
-    nudged = true;
-    restored = false;
-    revision++;
-    if (state === "aligned") placedHud();
-    else setState("aligned");
-    job.resolve(true);
-  }
-
-  /** The controller that points for a match: the hand that pulled last, else any. */
-  function matchRay(): RaySource | null {
-    const rays = ctx.input.rays().filter((r) => r.kind === "controller");
-    return rays.find((r) => r.handedness === preferredHand) ?? rays[0] ?? null;
-  }
-
-  /** Each frame of a match: where the ray is on the model, and where a release would land. */
-  function updateMatchMarks(): void {
-    const job = match;
-    const ray = job && !ctx.uiCapture ? matchRay() : null;
-    matchMarks.visible = false;
-    if (!job || !ray) return;
-    const held = job.from;
-    const at = held ?? pointOnModel(ray);
-    if (!at) return;
-    matchMarks.visible = true;
-    // The marks live under the kit's root, which stands still in the room.
-    pickDot.position.copy(at.m).applyMatrix4(correction);
-    pickMaterial.color.setHex(held ? 0x34d399 : 0xffffff);
-    dropDot.visible = dragLine.visible = !!held;
-    if (!held) return;
-    dropDot.position.copy(
-      hasHit ? hitPoint : v2.copy(ray.origin).addScaledVector(ray.direction, held.d),
-    );
-    dragLine.geometry.setFromPoints([pickDot.position, dropDot.position]);
-  }
-
-  function cancelMatch(): void {
-    const job = match;
-    if (!job) return;
-    match = null;
-    job.resolve(false);
-    if (active && isPlaced()) placedHud();
-  }
-
   /** Where model point A sits now: the pivot of turns, so a turn never moves mark A. */
   function pivotA(out = new Vector3()): Vector3 {
     return out.copy(modelA).applyMatrix4(correction);
@@ -1170,6 +1026,8 @@ export function createAR(ctx: KitContext): ARController {
     }
     // A panel has the controllers: the sticks are the panel's.
     if (!isPlaced() || ctx.uiCapture || locked) return;
+    // Saved or kept, the strip shows for a moment, so the step is seen.
+    if (stepTool(["turn", "move", "height"])) toolHud("", state === "aligned" ? 0 : DONE_SECONDS);
     // Either hand's stick drives the tool; the grip held is a shortcut for move, the trigger held
     // for height (forward on the stick is negative).
     for (const ray of controllers) {
@@ -1231,7 +1089,6 @@ export function createAR(ctx: KitContext): ARController {
     }
     if (wantStand && standNow) standPlace(frame, ref);
     followAnchors(frame, ref);
-    updateMatchMarks();
     updateGamepads(dt);
   }
 
@@ -1476,8 +1333,6 @@ export function createAR(ctx: KitContext): ARController {
     if (onsite) stopOnsite();
     reticle.visible = false;
     reticle.removeFromParent();
-    matchMarks.removeFromParent();
-    matchMarks.visible = false;
     releaseTarget();
     ctx.scene.background = savedBackground;
     ctx.renderer.setClearAlpha(savedClearAlpha);
@@ -1486,7 +1341,6 @@ export function createAR(ctx: KitContext): ARController {
     phase = "aiming";
     pointTaker?.(null);
     pointTaker = null;
-    cancelMatch();
     session = null;
   }
 
@@ -1530,19 +1384,6 @@ export function createAR(ctx: KitContext): ARController {
       tool = next;
       if (active && onsite && state === "aligned") placedHud();
     },
-    /**
-     * On site: two drags, each of a corner of the model onto the real corner; resolves true once
-     * both are done and the model is placed by them, false when called off.
-     */
-    matchPoints(): Promise<boolean> {
-      cancelMatch();
-      if (!active || !onsite || !isPlaced()) return Promise.resolve(false);
-      return new Promise((resolve) => {
-        match = { resolve, from: null, pin: null };
-        showHud("Corner 1 of 2", MATCH_LINES);
-      });
-    },
-    cancelMatch,
     /** On site, placed: the model's metres to scene coordinates, column-major; else null. */
     get alignmentMatrix(): number[] | null {
       return active && onsite && isPlaced() ? Array.from(correction.elements) : null;
@@ -1613,7 +1454,6 @@ export function createAR(ctx: KitContext): ARController {
       captureTarget();
       reticle.visible = false;
       ctx.root.add(reticle);
-      ctx.root.add(matchMarks);
 
       void requestViewerSource(generation);
       for (const input of session.inputSources ?? []) addInput(input);
@@ -1640,8 +1480,6 @@ export function createAR(ctx: KitContext): ARController {
       offSelectEnd();
       offSelectStart();
       geometry.dispose();
-      dotGeometry.dispose();
-      dragLine.geometry.dispose();
       material.dispose();
     },
   };

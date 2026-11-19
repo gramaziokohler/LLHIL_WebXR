@@ -89,11 +89,6 @@ export interface KitContext {
   up: Vector3;
   /** Raycast in scene coordinates: the host's `raycast` option, or the default one. */
   raycast: RaycastFn;
-  /**
-   * The raycast is the host's own: it knows the model where it rests, not where AR placed it, so
-   * in AR a ray is taken into the model's frame before it is asked.
-   */
-  hostRaycast: boolean;
   /** Moves the user (T2). Always present; set before any module starts. */
   space: SpaceController;
   /** Look of the in-headset panels; replaced (never mutated) by `kit.setTheme`. */
@@ -242,8 +237,6 @@ export interface ARController extends KitModule {
   readonly alignmentNote: string | null;
   readonly alignmentMarks: Pick<ARAlignment, "a" | "b"> | null;
   rebaseAlignment(alignment: ARAlignment): void;
-  matchPoints(): Promise<boolean>;
-  cancelMatch(): void;
   readonly alignmentMatrix: number[] | null;
   takePoint(): Promise<[number, number, number] | null>;
   readonly placement: ARPlacement | null;
