@@ -186,7 +186,7 @@ function specs(): PanelSpec[] {
   ];
 }
 
-function setup(options: { withMenu?: boolean } = {}) {
+function setup(options: { withMenu?: boolean; mode?: "vr" | "ar" } = {}) {
   const up = upVector("y");
   const events = new Emitter<AllEvents>();
   const root = new Group();
@@ -208,7 +208,7 @@ function setup(options: { withMenu?: boolean } = {}) {
     raycast: floor,
     space,
     input: { rays: () => rays },
-    mode: "vr",
+    mode: options.mode ?? "vr",
     session: null,
     options: resolved,
     theme: mergeTheme(DEFAULT_THEME, {}),
@@ -454,6 +454,16 @@ describe("panel hit-testing", () => {
 });
 
 describe("panels open, close and placement", () => {
+  it("runs in AR too, on either hand's B or Y", () => {
+    const t = setup({ mode: "ar" });
+    t.panels.set(specs());
+    t.events.emit("menu-button", { hand: "right" });
+    expect(t.panels.isOpen).toBe(true);
+    expect(t.ctx.uiCapture).toBe(true);
+    t.events.emit("menu-button", { hand: "left" });
+    expect(t.panels.isOpen).toBe(false);
+  });
+
   it("B or Y opens and closes the panels while any are set, and reports it", () => {
     const t = setup();
     t.events.emit("menu-button", { hand: "left" });
@@ -803,13 +813,13 @@ describe("panel sliders", () => {
     const t = opened();
     const ray = makeRay();
     t.rays.push(ray);
-    onTrack(t, ray, 0.5);
+    onTrack(t, ray, 0.6);
     recorder.reset();
     t.trigger(ray);
-    // 0.5 + 0.5 * 1.5 = 1.25, snapped to a step of 0.1.
-    expect(t.inputs.map((e) => e.value)).toEqual([1.3, 1.3]);
+    // 0.5 + 0.6 * 1.5 = 1.4, on a step of 0.1 (not a half step, which rounds either way).
+    expect(t.inputs.map((e) => e.value)).toEqual([1.4, 1.4]);
     expect(t.inputs.map((e) => e.final)).toEqual([false, true]);
-    expect(t.labels()).toContain("x1.3");
+    expect(t.labels()).toContain("x1.4");
   });
 
   it("stick left/right on a hovered slider steps it", () => {

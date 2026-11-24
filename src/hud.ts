@@ -206,6 +206,8 @@ export function createHud(ctx: KitContext): HudController {
     return forward.copy(lastForward);
   }
 
+  /** A message is up (shown unless a menu or the panels have the view). */
+  let wanted = false;
   return {
     show(title: string, lines: readonly string[] = []): void {
       if (disposed) return;
@@ -218,10 +220,12 @@ export function createHud(ctx: KitContext): HudController {
         texture.needsUpdate = true;
         drawnKey = key;
       }
-      if (!mesh.visible) snap = true;
-      mesh.visible = true;
+      if (!wanted) snap = true;
+      wanted = true;
+      mesh.visible = !ctx.uiCapture;
     },
     hide(): void {
+      wanted = false;
       mesh.visible = false;
     },
     start(): void {
@@ -230,7 +234,16 @@ export function createHud(ctx: KitContext): HudController {
       snap = true;
     },
     update(_frame: XRFrame, dt: number): void {
-      if (disposed || !mesh.visible || !mesh.parent) return;
+      if (disposed || !wanted || !mesh.parent) return;
+      // A menu or the side panels have the view: the message steps aside, and comes back after.
+      if (ctx.uiCapture) {
+        mesh.visible = false;
+        return;
+      }
+      if (!mesh.visible) {
+        mesh.visible = true;
+        snap = true;
+      }
       // three keeps the XR camera's matrixWorld in scene coordinates.
       const world = ctx.renderer.xr.getCamera().matrixWorld;
       head.setFromMatrixPosition(world);
@@ -257,6 +270,7 @@ export function createHud(ctx: KitContext): HudController {
     stop(): void {
       mesh.removeFromParent();
       // Instructions belong to one session; the next one shows its own.
+      wanted = false;
       mesh.visible = false;
     },
     dispose(): void {

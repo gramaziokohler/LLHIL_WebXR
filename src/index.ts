@@ -65,7 +65,8 @@ export function resolveOptions(options: XRKitOptions): ResolvedOptions {
       scales: options.ar?.scales ?? [1, 1 / 50, 1 / 100, 1 / 200],
       defaultScale: options.ar?.defaultScale ?? 1 / 100,
       anchors: options.ar?.anchors ?? true,
-      rotateStepDegrees: options.ar?.rotateStepDegrees ?? 15,
+      rotateSpeed: options.ar?.rotateSpeed ?? 60,
+      moveSpeed: options.ar?.moveSpeed ?? 0.3,
     },
     performance: {
       framebufferScale: options.performance?.framebufferScale ?? 1,
@@ -136,12 +137,14 @@ export function createXRKit(options: XRKitOptions): XRKit {
     yieldButton: () => panels.hasPanels,
     otherCapture: () => panels.capturing,
   });
-  const panels: PanelsController = createPanels(ctx, { otherCapture: () => menu.capturing });
+  const panels: PanelsController = createPanels(ctx, {
+    otherCapture: () => menu.capturing,
+  });
 
   const modulesFor = (mode: XRMode): KitModule[] =>
     mode === "vr"
       ? [ctx.space, ctx.input, locomotion, teleport, viewpoints, menu, panels, ctx.hud, diagnostics]
-      : [ctx.space, ctx.input, ar, ctx.hud, diagnostics];
+      : [ctx.space, ctx.input, ar, panels, ctx.hud, diagnostics];
 
   let active: KitModule[] = [];
   let pendingViewpoint: string | undefined;
@@ -240,6 +243,12 @@ export function createXRKit(options: XRKitOptions): XRKit {
     setScale(scale: number): void {
       ar.setScale(scale);
     },
+    setRotation(degrees: number): void {
+      ar.setRotation(degrees);
+    },
+    get rotation() {
+      return ar.rotation;
+    },
     realign(): void {
       if (ctx.mode === "ar") ar.realign();
     },
@@ -251,6 +260,39 @@ export function createXRKit(options: XRKitOptions): XRKit {
     },
     forgetAlignment(id: string): Promise<void> {
       return ar.forgetAlignment(id);
+    },
+    get alignmentMarks() {
+      return ctx.mode === "ar" ? ar.alignmentMarks : null;
+    },
+    get alignmentNote() {
+      return ctx.mode === "ar" ? ar.alignmentNote : null;
+    },
+    rebaseAlignment(alignment) {
+      if (ctx.mode === "ar") ar.rebaseAlignment(alignment);
+    },
+    get alignmentMatrix() {
+      return ctx.mode === "ar" ? ar.alignmentMatrix : null;
+    },
+    takePoint() {
+      return ctx.mode === "ar" ? ar.takePoint() : Promise.resolve(null);
+    },
+    get placement() {
+      return ctx.mode === "ar" ? ar.placement : null;
+    },
+    get placementLocked() {
+      return ar.locked;
+    },
+    set placementLocked(on) {
+      ar.locked = on;
+    },
+    get tool() {
+      return ar.tool;
+    },
+    set tool(tool) {
+      ar.tool = tool;
+    },
+    setPlacement(placement) {
+      if (ctx.mode === "ar") ar.setPlacement(placement);
     },
     get alignmentState() {
       return ctx.mode === "ar" ? ar.alignmentState : null;
@@ -313,7 +355,7 @@ export function createXRKit(options: XRKitOptions): XRKit {
       panels.updateRow(panelId, rowId, patch);
     },
     openPanels(): void {
-      if (ctx.mode !== "vr" || !panels.hasPanels) return;
+      if (!ctx.mode || !panels.hasPanels) return;
       menu.close();
       panels.open();
     },

@@ -91,8 +91,10 @@ export interface AROptions {
   defaultScale?: number;
   /** Use WebXR anchors where the browser offers them. Default true. */
   anchors?: boolean;
-  /** Degrees per turn step of the placed model. Default 15. */
-  rotateStepDegrees?: number;
+  /** Degrees per second the thumbstick turns the placed model at full deflection. Default 60. */
+  rotateSpeed?: number;
+  /** Metres per second the thumbstick, with the grip held, slides the placed model. Default 0.3. */
+  moveSpeed?: number;
 }
 
 /**
@@ -108,21 +110,64 @@ export interface ARAlignment {
   b: [number, number, number];
   /** What the marks are called on site, shown in the headset ("north-west corner"). */
   labels?: { a?: string; b?: string };
+  /**
+   * How the model is first placed when nothing is saved here. `"marks"` (the default): the user
+   * points at mark A, then B. `"stand"`: no pointing; the user stands on point A facing point B
+   * and the model is placed from the head's position and heading, then adjusted by eye
+   * (thumbstick: turn; grip and thumbstick: move) and saved. B or Y places it again from where
+   * the user stands now.
+   * For an exact placement: two marks on the floor, each touched with a controller and the
+   * trigger pulled; the first is point A, the second gives the direction to point B.
+   */
+  start?: "marks" | "stand";
+  /**
+   * With `start: "stand"`: nothing is placed when the session starts (and nothing saved is found);
+   * the host lets the user choose first, then calls `realign()`, which places from where the user
+   * stands.
+   */
+  hold?: boolean;
+}
+
+/**
+ * What the thumbstick does to the placed model in AR, on a table and on site: `turn` (left and
+ * right), `move` (on its plane, the way the user looks being forward) or `height` (forward up,
+ * back down). One stick and no second button is enough; the grip held is a shortcut for `move`.
+ */
+export type ARTool = "turn" | "move" | "height";
+
+/** AR on a table: where the placed model stands. */
+export interface ARPlacement {
+  /** The model's base point, in scene coordinates (the session's reference space). */
+  point: [number, number, number];
+  /** Its turn about up, degrees (positive turns left seen from above). */
+  rotation: number;
+  /** Its scale factor (1 = 1:1). */
+  scale: number;
 }
 
 /**
  * Where the on-site alignment stands. `restoring`: looking for an alignment saved on this device;
  * `pick-a` / `pick-b`: waiting for the user to point at a mark; `aligned`: placed, not yet saved;
- * `saved`: placed and saved on this device; `lost`: a saved alignment could not be found here.
+ * `saved`: placed and saved on this device; `kept`: placed and confirmed for this session, where
+ * it could not be saved on the device; `lost`: a saved alignment could not be found here.
  */
-export type AlignmentState = "restoring" | "pick-a" | "pick-b" | "aligned" | "saved" | "lost";
+export type AlignmentState =
+  | "restoring"
+  | "pick-a"
+  | "pick-b"
+  | "aligned"
+  | "saved"
+  | "kept"
+  | "lost";
 
-/** A small correction of the alignment, by eye: a turn about up through point A, a move on the ground. */
+/** A small correction of the alignment, by eye: a turn about up through point A, a move on the ground, a lift. */
 export interface AlignmentNudge {
   /** Degrees, positive turns left (counter-clockwise seen from above). */
   turnDeg?: number;
   /** Metres on the ground, in the user's frame: [right, forward]. */
   move?: [number, number];
+  /** Metres up (negative: down), to seat the model on the real floor. */
+  lift?: number;
 }
 
 export interface PerformanceOptions {
@@ -292,7 +337,10 @@ export interface XRKitOptions {
   controllerModels?: boolean;
   /** Show hand models where hand tracking is available. Default true. */
   hands?: boolean;
-  /** Replace the default raycast, for example with the host's BVH. */
+  /**
+   * Replace the default raycast, for example with the host's BVH. In AR on site the model is moved
+   * into the room: a host's raycast is then asked in the model's own frame, as it rests.
+   */
   raycast?: RaycastFn;
   /**
    * Whether `raycast` can find the floors yet, for hosts that build them after the session
@@ -375,6 +423,10 @@ export interface XRKit {
   setViewpoints(viewpoints: Viewpoint[]): void;
   /** AR only: set the model scale, applied around the placed point. */
   setScale(scale: number): void;
+  /** AR on a table: turn the placed model about up, in degrees (positive turns left seen from above). */
+  setRotation(degrees: number): void;
+  /** AR on a table: the model's turn in degrees, as the thumbstick and `setRotation` left it. */
+  readonly rotation: number;
   /** AR on site: start the alignment again (point at A, then B), dropping any saved one in use. */
   realign(): void;
   /** AR on site: a small correction by eye after aligning. */
@@ -383,8 +435,47 @@ export interface XRKit {
   saveAlignment(): Promise<boolean>;
   /** Forget an alignment saved on this device. */
   forgetAlignment(id: string): Promise<void>;
+  /**
+   * AR on site, placed by two touched floor marks: the model points that sit on the marks now,
+   * fine-tuning included (scene units), or null. Stored as an alignment's `a` and `b`, they give
+   * every other device the same placement from the same two marks.
+   */
+  readonly alignmentMarks: Pick<ARAlignment, "a" | "b"> | null;
+  /**
+   * AR on site: swap the running session's alignment (its id and points) for another one of the
+   * same placement. The model stays where it is; a saved state turns `aligned`, to be saved anew.
+   */
+  rebaseAlignment(alignment: ARAlignment): void;
+  /**
+   * AR on site, placed: the matrix from the model's metres (where the alignment's points are) to
+   * scene coordinates, column-major; null otherwise. A host uses it to measure in the model from a
+   * real point, e.g. the floor under a controller.
+   */
+  readonly alignmentMatrix: number[] | null;
+  /**
+   * AR: the position of the controller whose trigger is pulled next (scene coordinates), for a
+   * host that measures real points, e.g. two marks on a table. That pull does nothing else.
+   * Resolves null when the session ends or another request replaces this one.
+   */
+  takePoint(): Promise<[number, number, number] | null>;
+  /** AR: what the thumbstick does to the placed model. Default `"turn"`. */
+  tool: ARTool;
+  /**
+   * AR on site: while true the thumbsticks and the save button leave the placed model alone, so
+   * a visitor's hand on a controller moves nothing. Default false.
+   */
+  placementLocked: boolean;
+  /** AR on a table: where the placed model stands, or null until it is placed. */
+  readonly placement: ARPlacement | null;
+  /** AR on a table: place the model (shown if it was not yet), e.g. as another device has it. */
+  setPlacement(placement: ARPlacement): void;
   /** The on-site alignment state, or null outside an on-site AR session. */
   readonly alignmentState: AlignmentState | null;
+  /**
+   * AR on site, in the `kept` state: why the device could not save the alignment, with what the
+   * device said where it said something; else null.
+   */
+  readonly alignmentNote: string | null;
   /**
    * Changes the VR locomotion, now or for the next session; emits `locomotion` when the mode
    * changes. Invalid values are ignored with a warning.
