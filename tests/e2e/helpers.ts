@@ -7,16 +7,19 @@ type Vec3 = [number, number, number];
 /**
  * Opens the harness and waits until it (and in AR, the synthetic room) is ready. With
  * `alignment`, AR offers the harness's on-site alignment (id "e2e") through its own button; with
- * `demo`, the scene is the example viewer's demo building.
+ * `demo`, the scene is the example viewer's demo building; with `panels`, the kit has the example
+ * viewer's VR side panels.
  */
 export async function openHarness(
   page: Page,
   mode: "vr" | "ar" = "vr",
-  options: { alignment?: boolean; demo?: boolean } = {},
+  options: { alignment?: boolean; demo?: boolean; panels?: boolean } = {},
 ): Promise<void> {
   let query = mode === "ar" ? (options.alignment ? "/?mode=ar&alignment=1" : "/?mode=ar") : "/";
   // The example viewer's demo building instead of the plain ground and block.
   if (options.demo) query += query.includes("?") ? "&scene=demo" : "?scene=demo";
+  // The example viewer's VR side panels.
+  if (options.panels) query += query.includes("?") ? "&panels=1" : "?panels=1";
   await page.goto(query);
   await page.waitForFunction(() => document.body.dataset.ready === "true");
 }

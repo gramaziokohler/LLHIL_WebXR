@@ -63,8 +63,10 @@ vi.mock("../../src/align", async () => {
 const store = vi.hoisted(() => ({
   supported: vi.fn((_session: unknown) => false),
   has: vi.fn((_id: string) => true),
+  sweep: vi.fn(async (_s: unknown) => 0),
   save: vi.fn(async (_s: unknown, _id: string, _a: unknown, _b: unknown) => true),
   restore: vi.fn(async (_s: unknown, _id: string): Promise<unknown> => null),
+  repoint: vi.fn((_id: string, _points: number[]) => true),
   forget: vi.fn(async (_s: unknown, _id: string) => {}),
 }));
 vi.mock("../../src/persist", () => ({ createAlignmentStore: () => store }));
@@ -187,7 +189,9 @@ const ALIGNMENT: ARAlignment = {
 };
 const REAL_A = new Vector3(1, 0, 1);
 const REAL_B = new Vector3(5, 0, 1);
-const HINT = "Thumbstick: fine-tune · A: save · B: re-align";
+const STRIP = "[ TURN ]  MOVE  HEIGHT";
+const HINTS = ["Press the stick: next", "A or X: save, error 0.0 cm", "Menu: B or Y"];
+const AGAIN = "Menu: B or Y";
 
 interface SetupOptions {
   model?: Object3D | "scene";
@@ -288,6 +292,11 @@ function setup(o: SetupOptions = {}) {
   function select(ray: RaySource = tapRay) {
     ctx.events.emit("selectend", { ray });
   }
+  /** A whole trigger pull: pressed, then let go. */
+  function pull(ray: RaySource = tapRay) {
+    ctx.events.emit("selectstart", { ray });
+    ctx.events.emit("selectend", { ray });
+  }
   /** Points at A and at B and pulls the trigger on each, as a user does. */
   async function pick(a = REAL_A, b = REAL_B, anchors?: [FakeAnchor, FakeAnchor]) {
     const make = (i: 0 | 1) => (anchors ? () => Promise.resolve(anchors[i]) : undefined);
@@ -301,6 +310,10 @@ function setup(o: SetupOptions = {}) {
     await flush();
   }
   const lastHud = () => hud.show.mock.calls.at(-1) as [string, string[]] | undefined;
+  /** Whether the message is in view: shown after the last hide. */
+  const hudShown = () =>
+    (hud.show.mock.invocationCallOrder.at(-1) ?? 0) >
+    (hud.hide.mock.invocationCallOrder.at(-1) ?? 0);
   const reticle = () => root.children.find((c) => c.name === "llhil-webxr-reticle");
   return {
     ar,
@@ -322,8 +335,10 @@ function setup(o: SetupOptions = {}) {
     update,
     hitAt,
     select,
+    pull,
     pick,
     lastHud,
+    hudShown,
     reticle,
   };
 }
@@ -368,7 +383,7 @@ describe("on-site alignment: picking", () => {
 
     t.update();
     expect(t.reticle()!.visible).toBe(false);
-    expect(t.lastHud()).toEqual(["Aligned, error 0.0 cm", [HINT]]);
+    expect(t.lastHud()).toEqual([STRIP, HINTS]);
     expect(t.states).toEqual([
       { state: "pick-a", errorM: null, restored: false },
       { state: "pick-b", errorM: null, restored: false },
@@ -383,7 +398,7 @@ describe("on-site alignment: picking", () => {
     const last = t.states.at(-1)!;
     expect(last.state).toBe("aligned");
     expect(last.errorM).toBeCloseTo(0.02, 9);
-    expect(t.lastHud()?.[0]).toBe("Aligned, error 2.0 cm");
+    expect(t.lastHud()?.[1][1]).toBe("A or X: save, error 2.0 cm");
   });
 
   it("aligns a millimetre model at 1:1", async () => {
@@ -487,7 +502,7 @@ describe("on-site alignment: restoring", () => {
     expect(t.model.visible).toBe(true);
     near(t.mapped(ALIGNMENT.a), REAL_A);
     near(t.mapped(ALIGNMENT.b), REAL_B);
-    expect(t.lastHud()).toEqual(["Restored, error 0.0 cm", [HINT]]);
+    expect(t.lastHud()).toEqual(["Restored, error 0.0 cm", [AGAIN]]);
     expect(t.states).toEqual([
       { state: "restoring", errorM: null, restored: false },
       { state: "saved", errorM: 0, restored: true },
@@ -556,7 +571,7 @@ describe("on-site alignment: fine-tune", () => {
       .applyAxisAngle(new Vector3(0, 1, 0), deg * DEG)
       .add(REAL_A);
 
-  it("turns about A in half-degree steps on the thumbstick, repeating while held", async () => {
+  it("turns about A smoothly on the thumbstick, a light push slowly", async () => {
     const t = setup();
     await t.start();
     await t.pick();
@@ -564,44 +579,239 @@ describe("on-site alignment: fine-tune", () => {
     t.rays.push(ray);
     const axes = (ray.gamepad as any).axes as number[];
 
-    axes[2] = 0.8;
-    t.update(0.016);
+    // Full right for a tenth of a second at 5 degrees a second: clockwise seen from above.
+    axes[2] = 1;
+    t.update(0.1);
     near(t.mapped(ALIGNMENT.a), REAL_A);
     near(t.mapped(ALIGNMENT.b), turnedB(-0.5));
-    t.update(0.1);
-    near(t.mapped(ALIGNMENT.b), turnedB(-0.5));
-    t.update(0.1);
-    near(t.mapped(ALIGNMENT.b), turnedB(-1));
-    // Released, then pushed left once.
-    axes[2] = 0;
-    t.update(0.016);
-    axes[2] = -0.9;
-    t.update(0.016);
-    near(t.mapped(ALIGNMENT.b), turnedB(-0.5));
-    near(t.mapped(ALIGNMENT.a), REAL_A);
-    // Below the threshold nothing happens.
-    axes[2] = 0.5;
+    // Inside the dead zone nothing happens.
+    axes[2] = 0.1;
     t.update(1);
     near(t.mapped(ALIGNMENT.b), turnedB(-0.5));
+    // Half way, to the left: a quarter of the speed (the response is squared).
+    axes[2] = -0.575;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.b), turnedB(-0.375));
+    near(t.mapped(ALIGNMENT.a), REAL_A);
   });
 
-  it("moves 5 cm along the head's forward on the ground", async () => {
+  it("slides along the head's forward and right on the ground with the grip held", async () => {
     const t = setup();
     await t.start();
     await t.pick();
-    // The head looks along -X, tilted down: forward on the ground is still -X.
+    // The head looks along -X, tilted down: forward on the ground is still -X, right is -Z.
     t.head.matrixWorld.makeRotationY(90 * DEG).multiply(new Matrix4().makeRotationX(-40 * DEG));
     const ray = gamepadRay("r");
     t.rays.push(ray);
     const axes = (ray.gamepad as any).axes as number[];
-    axes[3] = -0.9;
-    t.update(0.016);
+    (ray.gamepad as any).buttons[1].pressed = true;
+    axes[3] = -1;
+    t.update(0.1);
     near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(-0.05, 0, 0)));
     axes[3] = 0;
-    t.update(0.016);
-    axes[3] = 0.9;
-    t.update(0.016);
+    axes[2] = 1;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(-0.05, 0, -0.05)));
+    // No turn while sliding.
+    near(t.mapped(ALIGNMENT.b), REAL_B.clone().add(new Vector3(-0.05, 0, -0.05)));
+  });
+
+  it("start: stand places A under the head and B ahead of it, with no marks; realign() places again", async () => {
+    const t = setup();
+    const pose = (x: number, z: number, yawDeg: number) => ({
+      transform: {
+        position: { x, y: 1.7, z },
+        matrix: new Matrix4().makeRotationY(yawDeg * DEG).setPosition(x, 1.7, z).elements,
+      },
+    });
+    let viewer: ReturnType<typeof pose> | null = null;
+    (t.frame as any).getViewerPose = () => viewer;
+    await t.start({ ...ALIGNMENT, start: "stand" });
+    // Not placed at once: the user looks along the view first, then pulls the trigger.
+    viewer = pose(5, 5, 45);
+    t.update();
+    expect(t.ar.alignmentState).toBe(null);
+    expect(t.lastHud()).toEqual(["Look along the view", ["Then pull the trigger"]]);
+    // A release alone (the pull that chose a menu row) is not it.
+    t.select();
+    t.update();
+    expect(t.ar.alignmentState).toBe(null);
+    // No head pose at the pull: placed on the first frame that has one.
+    viewer = null;
+    t.pull();
+    t.update();
+    expect(t.ar.alignmentState).toBe(null);
+    // Standing at (2, 3), looking along -X: A on the floor below, B four metres ahead.
+    viewer = pose(2, 3, 90);
+    t.update();
+    expect(t.ar.alignmentState).toBe("aligned");
+    near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
+    near(t.mapped(ALIGNMENT.b), new Vector3(-2, 0, 3));
+    // Placing again (the host's menu row): from where the user stands now.
+    // The head is turned to the menu when the row is chosen: nothing moves until the pull.
+    viewer = pose(0, 0, 70);
+    t.ar.realign();
+    t.update();
+    t.update();
+    expect(t.model.visible).toBe(false);
+    viewer = pose(0, 0, 0);
+    t.pull();
+    t.update();
+    near(t.mapped(ALIGNMENT.a), new Vector3(0, 0, 0));
+    near(t.mapped(ALIGNMENT.b), new Vector3(0, 0, -4));
+    expect(t.ar.alignmentState).toBe("aligned");
+  });
+
+  it("start: stand takes two floor marks touched with a controller: the first is A, the second the direction", async () => {
+    const t = setup();
+    const viewer = {
+      transform: {
+        position: { x: 2, y: 1.7, z: 3 },
+        matrix: new Matrix4().setPosition(2, 1.7, 3).elements,
+      },
+    };
+    (t.frame as any).getViewerPose = () => viewer;
+    await t.start({ ...ALIGNMENT, start: "stand" });
+    t.update();
+    t.pull();
+    t.update();
+    near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
+    const ray = gamepadRay("r");
+    // Held up: a trigger pull is not a touch.
+    ray.origin.set(7, 1.1, 7);
+    t.select(ray);
+    near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
+    // Down at the first mark, then at the second, six metres along +X: B is four metres that way.
+    ray.origin.set(10, 0.04, -5);
+    t.select(ray);
+    near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
+    // Too close to the first: asked again.
+    ray.origin.set(10.2, 0.04, -5);
+    t.select(ray);
+    ray.origin.set(16, 0.05, -5);
+    t.select(ray);
+    near(t.mapped(ALIGNMENT.a), new Vector3(10, 0, -5));
+    near(t.mapped(ALIGNMENT.b), new Vector3(14, 0, -5));
+    expect(t.ar.alignmentState).toBe("aligned");
+
+    // Untouched, the marks give the alignment's own points back (B four metres from A).
+    const own = t.ar.alignmentMarks!;
+    near(new Vector3(...own.a), new Vector3(...ALIGNMENT.a));
+    near(new Vector3(...own.b), new Vector3(...ALIGNMENT.b));
+    // Fine-tuned: slid 0.2 m along +X (the head looks along -Z, so that is to the right) and lifted
+    // 0.05. The model points on the marks are now others; rebased on them, the model stays put
+    // and a second device touching the same marks gets the same placement.
+    t.ar.nudge({ move: [0.2, 0], lift: 0.05 });
+    const world = t.model.matrixWorld.clone();
+    const refined = t.ar.alignmentMarks!;
+    t.ar.rebaseAlignment({ id: "poi-7b", a: refined.a, b: refined.b, start: "stand" });
+    expect(t.model.matrixWorld.equals(world)).toBe(true);
+    near(t.mapped(refined.a), new Vector3(10, 0, -5));
+    near(t.mapped(refined.b), new Vector3(14, 0, -5));
+    expect(new Vector3(...refined.a).distanceTo(new Vector3(...ALIGNMENT.a))).toBeGreaterThan(0.2);
+  });
+
+  it("lifts and lowers the model with the trigger held and the stick, on either hand, and with nudge({ lift })", async () => {
+    const t = setup();
+    await t.start();
+    await t.pick();
+    const right = gamepadRay("r");
+    const left = gamepadRay("l", "left");
+    t.rays.push(right, left);
+    // Trigger held, stick forward (negative): up, 0.2 m/s at full deflection.
+    (right.gamepad as any).buttons[0].pressed = true;
+    (right.gamepad as any).axes[3] = -1;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(0, 0.02, 0)));
+    near(t.mapped(ALIGNMENT.b), REAL_B.clone().add(new Vector3(0, 0.02, 0)));
+    (right.gamepad as any).buttons[0].pressed = false;
+    (right.gamepad as any).axes[3] = 0;
+    // The left hand's does the same, the other way.
+    (left.gamepad as any).buttons[0].pressed = true;
+    (left.gamepad as any).axes[3] = 1;
+    t.update(0.1);
     near(t.mapped(ALIGNMENT.a), REAL_A);
+    (left.gamepad as any).buttons[0].pressed = false;
+    (left.gamepad as any).axes[3] = 0;
+    // Without the trigger the stick's forward and back does nothing.
+    (right.gamepad as any).axes[3] = -1;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.a), REAL_A);
+    (right.gamepad as any).axes[3] = 0;
+    t.ar.nudge({ lift: -0.05 });
+    near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(0, -0.05, 0)));
+    expect(t.ar.alignmentState).toBe("aligned");
+  });
+
+  it("one stick does it all: the tool says what it drives (turn, move, height)", async () => {
+    const t = setup();
+    await t.start();
+    await t.pick();
+    const ray = gamepadRay("l", "left");
+    t.rays.push(ray);
+    const axes = (ray.gamepad as any).axes as number[];
+    expect(t.ar.tool).toBe("turn");
+    // Height: forward (negative) is up, 0.2 m/s at full deflection.
+    t.ar.tool = "height";
+    axes[3] = -1;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(0, 0.02, 0)));
+    // Move: the head looks along -Z, so forward is -Z and right is +X; no grip needed.
+    t.ar.tool = "move";
+    axes[2] = 1;
+    t.update(0.1);
+    near(t.mapped(ALIGNMENT.a), REAL_A.clone().add(new Vector3(0.05, 0.02, -0.05)));
+    t.update();
+    expect(t.lastHud()).toEqual(["TURN  [ MOVE ]  HEIGHT", HINTS]);
+    // Not a tool: ignored.
+    (t.ar as any).tool = "spin";
+    expect(t.ar.tool).toBe("move");
+    // The stick pressed down steps to the next tool, once per press, and round again.
+    axes[2] = 0;
+    axes[3] = 0;
+    const stick = (ray.gamepad as any).buttons[3];
+    stick.pressed = true;
+    t.update();
+    expect(t.ar.tool).toBe("height");
+    t.update();
+    expect(t.ar.tool).toBe("height");
+    t.update();
+    expect(t.lastHud()?.[0]).toBe("TURN  MOVE  [ HEIGHT ]");
+    stick.pressed = false;
+    t.update();
+    stick.pressed = true;
+    t.update();
+    expect(t.ar.tool).toBe("turn");
+    // Locked: the press does nothing.
+    stick.pressed = false;
+    t.update();
+    t.ar.locked = true;
+    stick.pressed = true;
+    t.update();
+    expect(t.ar.tool).toBe("turn");
+  });
+
+  it("start: stand with hold waits for realign() before it places", async () => {
+    const t = setup();
+    (t.frame as any).getViewerPose = () => ({
+      transform: {
+        position: { x: 2, y: 1.7, z: 3 },
+        matrix: new Matrix4().setPosition(2, 1.7, 3).elements,
+      },
+    });
+    await t.start({ ...ALIGNMENT, start: "stand", hold: true });
+    t.update();
+    t.update();
+    expect(t.ar.alignmentState).toBe(null);
+    expect(t.model.visible).toBe(false);
+    expect(t.lastHud()).toEqual(["Where do you stand?", ["Menu: B or Y"]]);
+    t.ar.realign();
+    t.update();
+    expect(t.ar.alignmentState).toBe(null);
+    t.pull();
+    t.update();
+    expect(t.ar.alignmentState).toBe("aligned");
+    near(t.mapped(ALIGNMENT.a), new Vector3(2, 0, 3));
   });
 
   it("nudge() turns about A and moves in the user's frame", async () => {
@@ -674,11 +884,24 @@ describe("on-site alignment: save and realign", () => {
     press(t, ray, 4);
     await flush();
     expect(store.save).toHaveBeenCalledTimes(1);
-    expect(store.save).toHaveBeenCalledWith(t.session, "poi-7", anchors[0], anchors[1]);
+    expect(store.save).toHaveBeenCalledWith(
+      t.session,
+      "poi-7",
+      anchors[0],
+      anchors[1],
+      // The model points the anchors stand for.
+      [...ALIGNMENT.a, ...ALIGNMENT.b],
+    );
     expect(t.ar.alignmentState).toBe("saved");
     expect(t.states.at(-1)).toEqual({ state: "saved", errorM: 0, restored: false });
     t.update();
-    expect(t.lastHud()).toEqual(["Saved, error 0.0 cm", [HINT]]);
+    expect(t.lastHud()).toEqual(["Saved, error 0.0 cm", [AGAIN]]);
+    // Done: the message goes by itself after a few seconds.
+    expect(t.hudShown()).toBe(true);
+    t.update(3);
+    expect(t.hudShown()).toBe(true);
+    t.update(1.5);
+    expect(t.hudShown()).toBe(false);
     // Saved anchors belong to the store now.
     t.stop();
     for (const a of anchors) expect(a.delete).not.toHaveBeenCalled();
@@ -694,7 +917,8 @@ describe("on-site alignment: save and realign", () => {
     t.ar.nudge({ move: [0, 0.1] });
     const saving = t.ar.saveAlignment();
     expect(t.frame.created).toHaveLength(0);
-    // The anchors need an active frame.
+    // The anchors need an active frame (after the store said it has none to use again).
+    await flush();
     t.update();
     await expect(saving).resolves.toBe(true);
     expect(t.frame.created).toHaveLength(2);
@@ -706,10 +930,30 @@ describe("on-site alignment: save and realign", () => {
       "poi-7",
       t.frame.created[0].anchor,
       t.frame.created[1].anchor,
+      [...ALIGNMENT.a, ...ALIGNMENT.b],
     );
     expect(t.ar.alignmentState).toBe("saved");
     // The pick anchors are replaced and deleted; the saved ones stay.
     for (const a of anchors) expect(a.delete).toHaveBeenCalledTimes(1);
+    // Saved again after another adjustment: the same two anchors, other model points on them.
+    // Nothing new is asked of the device, so nothing can be left behind on it.
+    t.frame.poses.set(t.frame.created[0].anchor.anchorSpace, fakePose(t.frame.created[0].at));
+    t.frame.poses.set(t.frame.created[1].anchor.anchorSpace, fakePose(t.frame.created[1].at));
+    t.ar.nudge({ move: [0.25, 0] });
+    expect(t.ar.alignmentState).toBe("aligned");
+    const before = t.model.matrixWorld.clone();
+    const again = t.ar.saveAlignment();
+    t.update();
+    await expect(again).resolves.toBe(true);
+    expect(t.frame.created).toHaveLength(2);
+    expect(store.save).toHaveBeenCalledTimes(1);
+    expect(store.repoint).toHaveBeenCalledTimes(1);
+    expect(t.ar.alignmentState).toBe("saved");
+    expect(t.model.matrixWorld.equals(before)).toBe(true);
+    // The points saved are the model's that stand on the two anchors now.
+    const saved = store.repoint.mock.calls[0][1] as number[];
+    near(t.mapped([saved[0], saved[1], saved[2]]), t.frame.created[0].at);
+    near(t.mapped([saved[3], saved[4], saved[5]]), t.frame.created[1].at);
     t.stop();
     for (const c of t.frame.created) expect(c.anchor.delete).not.toHaveBeenCalled();
   });
@@ -723,14 +967,18 @@ describe("on-site alignment: save and realign", () => {
     t.rays.push(ray);
     await expect(t.ar.saveAlignment()).resolves.toBe(false);
     t.update();
-    expect(t.lastHud()).toEqual(["Saving is not available on this device", [HINT]]);
+    // Not kept on the device: it holds for this session, and the panel says why.
+    expect(t.lastHud()).toEqual(["Placed, not saved", ["Why: no anchors", AGAIN]]);
     expect(store.save).not.toHaveBeenCalled();
-    expect(t.ar.alignmentState).toBe("aligned");
-    // The A button does the same, without changing state.
+    expect(t.ar.alignmentState).toBe("kept");
+    // The A button tries again, to the same end.
     press(t, ray, 4);
     await flush();
     expect(store.save).not.toHaveBeenCalled();
-    expect(stateNames(t)).toEqual(["pick-a", "pick-b", "aligned"]);
+    expect(stateNames(t)).toEqual(["pick-a", "pick-b", "aligned", "kept"]);
+    // Adjusting it is placing again.
+    t.ar.nudge({ turnDeg: 1 });
+    expect(t.ar.alignmentState).toBe("aligned");
   });
 
   it("resolves false when the store fails to save", async () => {
@@ -741,10 +989,96 @@ describe("on-site alignment: save and realign", () => {
     t.update(2);
     await t.pick(REAL_A, REAL_B, [fakeAnchor(), fakeAnchor()]);
     await expect(t.ar.saveAlignment()).resolves.toBe(false);
-    expect(t.ar.alignmentState).toBe("aligned");
+    expect(t.ar.alignmentState).toBe("kept");
+    t.update();
+    expect(t.lastHud()?.[1][0]).toBe("Why: not kept");
   });
 
-  it("realigns on the B button, dropping the anchors in use but not the saved ones", async () => {
+  it("the saved model stays on its anchors when the room's coordinates jump", async () => {
+    const a = fakeAnchor();
+    const b = fakeAnchor();
+    store.supported.mockReturnValue(true);
+    store.restore.mockResolvedValue({ a, b });
+    const t = setup();
+    await t.start();
+    t.frame.poses.set(a.anchorSpace, fakePose(REAL_A));
+    t.frame.poses.set(b.anchorSpace, fakePose(REAL_B));
+    t.update(1);
+    expect(t.ar.alignmentState).toBe("saved");
+    t.update();
+    // The anchors' own tremble (millimetres) moves nothing.
+    const before = t.model.matrixWorld.clone();
+    t.frame.poses.set(a.anchorSpace, fakePose(REAL_A.clone().add(new Vector3(0.003, 0, 0))));
+    t.update();
+    expect(t.model.matrixWorld.equals(before)).toBe(true);
+    // The device re-centred the room (the user left its boundary): both anchors stand elsewhere
+    // in its coordinates, turned and moved. The model goes with them.
+    const jump = new Matrix4().makeRotationY(40 * DEG).setPosition(3, 0, -2);
+    const ja = REAL_A.clone().applyMatrix4(jump);
+    const jb = REAL_B.clone().applyMatrix4(jump);
+    t.frame.poses.set(a.anchorSpace, fakePose(ja));
+    t.frame.poses.set(b.anchorSpace, fakePose(jb));
+    t.update();
+    near(t.mapped(ALIGNMENT.a), ja);
+    near(t.mapped(ALIGNMENT.b), jb);
+    expect(t.ar.alignmentState).toBe("saved");
+    // Not tracked for a moment: it stays where it is.
+    t.frame.poses.delete(a.anchorSpace);
+    t.update();
+    near(t.mapped(ALIGNMENT.a), ja);
+  });
+
+  it("a placement the device could not keep still holds on its anchors for the session", async () => {
+    store.supported.mockReturnValue(true);
+    store.save.mockResolvedValue("handle refused" as never);
+    const t = setup();
+    await t.start();
+    t.update(2);
+    await t.pick(REAL_A, REAL_B, [fakeAnchor(), fakeAnchor()]);
+    t.ar.nudge({ move: [0, 0.1] });
+    const saving = t.ar.saveAlignment();
+    await flush();
+    t.update();
+    await expect(saving).resolves.toBe(false);
+    expect(t.ar.alignmentState).toBe("kept");
+    // The two anchors made for the save are kept in hand.
+    expect(t.frame.created).toHaveLength(2);
+    for (const c of t.frame.created) expect(c.anchor.delete).not.toHaveBeenCalled();
+    const [ca, cb] = t.frame.created;
+    t.frame.poses.set(ca.anchor.anchorSpace, fakePose(ca.at));
+    t.frame.poses.set(cb.anchor.anchorSpace, fakePose(cb.at));
+    t.update();
+    const shift = new Vector3(1, 0, 2);
+    t.frame.poses.set(ca.anchor.anchorSpace, fakePose(ca.at.clone().add(shift)));
+    t.frame.poses.set(cb.anchor.anchorSpace, fakePose(cb.at.clone().add(shift)));
+    t.update();
+    near(t.mapped(ALIGNMENT.a), ca.at.clone().add(shift));
+    near(t.mapped(ALIGNMENT.b), cb.at.clone().add(shift));
+  });
+
+  it("locked: the sticks and the save button leave the placed model alone", async () => {
+    store.supported.mockReturnValue(true);
+    const t = setup();
+    await t.start();
+    t.update(2);
+    await t.pick();
+    const ray = gamepadRay("r");
+    t.rays.push(ray);
+    t.ar.locked = true;
+    (ray.gamepad as any).axes[2] = 1;
+    (ray.gamepad as any).buttons[4].pressed = true;
+    const before = t.model.matrixWorld.clone();
+    t.update(0.5);
+    expect(t.model.matrixWorld.equals(before)).toBe(true);
+    expect(t.ar.alignmentState).toBe("aligned");
+    expect(store.save).not.toHaveBeenCalled();
+    t.ar.locked = false;
+    (ray.gamepad as any).buttons[4].pressed = false;
+    t.update(0.1);
+    expect(t.model.matrixWorld.equals(before)).toBe(false);
+  });
+
+  it("realign() asks for the marks again, dropping the anchors in use but not the saved ones", async () => {
     store.supported.mockReturnValue(true);
     const t = setup();
     await t.start();
@@ -753,7 +1087,10 @@ describe("on-site alignment: save and realign", () => {
     await t.pick(REAL_A, REAL_B, anchors);
     const ray = gamepadRay("l", "left");
     t.rays.push(ray);
+    // B and Y are the host's menu now: placing again is the host's call.
     press(t, ray, 5);
+    expect(t.ar.alignmentState).toBe("aligned");
+    t.ar.realign();
     expect(t.ar.alignmentState).toBe("pick-a");
     expect(t.model.visible).toBe(false);
     for (const a of anchors) expect(a.delete).toHaveBeenCalledTimes(1);

@@ -11,6 +11,7 @@ import {
 } from "../../../src/index";
 import { metaQuest3, XRDevice } from "iwer";
 import { createDemoScene } from "../../../examples/viewer/demo-scene";
+import { setViewerPanels } from "../../../examples/viewer/vr-panels";
 import {
   AmbientLight,
   BoxGeometry,
@@ -148,6 +149,8 @@ const kit = createXRKit({
 createXRButtons(kit, document.body);
 // One host item, so specs can check `menu-select` from the VR menu.
 kit.setMenuItems([{ id: "marks", label: "Show marks", kind: "toggle", value: true }]);
+// ?panels=1: the example viewer's VR side panels instead of the centre menu.
+if (params.get("panels") === "1") setViewerPanels(kit, viewpoints);
 
 // The kit's buttons enter table-top AR; on site needs the alignment, so the harness adds its own.
 if (alignment) {
@@ -176,6 +179,8 @@ record("menu", (p) => p);
 record("menu-select", (p) => p);
 record("locomotion", (p) => p);
 record("menu-button", (p) => p);
+record("panel-input", (p) => p);
+record("panels", (p) => p);
 record("select", (p) => ({
   object: p.object?.name ?? null,
   point: p.point?.toArray() ?? null,

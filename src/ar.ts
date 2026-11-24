@@ -14,30 +14,50 @@ import { nudgeMatrix, solveTwoPoint } from "./align";
 import type { ARController, KitContext, RaySource } from "./internal";
 import { forwardAtYawZero } from "./math";
 import { createAlignmentStore } from "./persist";
-import type { AlignmentNudge, AlignmentState, ARAlignment } from "./types";
+import type { AlignmentNudge, AlignmentState, ARAlignment, ARPlacement, ARTool } from "./types";
 import { ANCHOR_TIMEOUT_MS, withTimeout } from "./timeout";
 
 const DEG = Math.PI / 180;
-/** Thumbstick turn: fire beyond this, re-arm below the second (hysteresis, one step per push). */
-const TURN_FIRE = 0.6;
-const TURN_REARM = 0.3;
+/** Thumbstick deflection below this does nothing; above it the speed grows to full at 1. */
+const STICK_DEAD = 0.15;
+/** On site: a trigger pulled with the controller this close to the floor (metres) touches a mark. */
+const TOUCH_HEIGHT = 0.4;
+/** Two touched marks closer than this (metres) give no direction. */
+const TOUCH_MIN_SPAN = 0.5;
+/** A hit this close to a controller (metres) is the hand holding it. */
+const HAND_CLEARANCE = 0.3;
+/** xr-standard gamepad: the trigger, and the grip (squeeze). */
+const BUTTON_TRIGGER = 0;
+const BUTTON_GRIP = 1;
 /** Anchor drift below this (squared metres) is not worth recomputing the model's matrices. */
 const ANCHOR_EPSILON_SQ = 1e-8;
 
-/** On site: fine-tune fires beyond this on the thumbstick, then repeats while held. */
-const NUDGE_FIRE = 0.6;
-const NUDGE_REPEAT_S = 0.15;
-const NUDGE_TURN_DEG = 0.5;
-const NUDGE_MOVE_M = 0.05;
+/**
+ * On site, fine-tuning at full deflection: degrees and metres a second (the response is squared).
+ * The turn is slow: five metres from the user a degree moves the model nine centimetres, so at
+ * this rate what the user looks at moves about as fast as with the move tool.
+ */
+const NUDGE_TURN_DEG_S = 5;
+const NUDGE_MOVE_M_S = 0.5;
+const NUDGE_LIFT_M_S = 0.2;
+/** On site: the saved model follows its anchors once they stand this far from where they did. */
+const FOLLOW_STEP_M = 0.01;
 /** Restored anchors that give no pose for this long count as not found here. */
 const RESTORE_TIMEOUT_S = 3;
 /** How long `lost` stays on the panel before picking starts. */
 const LOST_HOLD_S = 1.5;
 /** xr-standard gamepad buttons: A/X saves, B/Y aligns again. */
 const BUTTON_SAVE = 4;
-const BUTTON_REALIGN = 5;
-const CONTROLS_HINT = "Thumbstick: fine-tune · A: save · B: re-align";
-const SAVE_UNAVAILABLE = "Saving is not available on this device";
+/** xr-standard: the thumbstick pressed down. It steps to the next tool. */
+const BUTTON_STICK = 3;
+/** The panel's lines are short: a headset cuts what does not fit its width. */
+const MENU_HINT = "Menu: B or Y";
+/** The kept anchors closer than this (metres) give no heading: new ones are made. */
+const REPOINT_MIN_SPAN = 0.1;
+/** Frames a save waits for the kept anchors' poses before it makes new ones. */
+const REPOINT_FRAMES = 90;
+/** How long a message that says something is done stays in view, seconds. */
+const DONE_SECONDS = 4;
 
 /** `aiming`: never placed this session; `replacing`: placed, but the reticle is back for a new spot. */
 type Phase = "aiming" | "placed" | "replacing";
@@ -70,6 +90,8 @@ export function createAR(ctx: KitContext): ARController {
   let generation = 0;
   let session: XRSession | null = null;
   let phase: Phase = "aiming";
+  /** A host waits for the next trigger pull of a controller (takePoint). */
+  let pointTaker: ((point: [number, number, number] | null) => void) | null = null;
 
   // What is transformed: the model, or the group standing in for the scene.
   let target: Object3D | null = null;
@@ -109,8 +131,6 @@ export function createAR(ctx: KitContext): ARController {
   let anchorOffsetKnown = false;
   const anchorOffset = new Vector3();
 
-  const armed = new Map<string, boolean>();
-
   // On site (K2): alignment by two reference points instead of table-top placement.
   const store = createAlignmentStore();
   let requestedAlignment: ARAlignment | null = null;
@@ -142,10 +162,50 @@ export function createAR(ctx: KitContext): ARController {
   let restoredAnchors: { a: XRAnchor; b: XRAnchor } | null = null;
   let restoreClock = 0;
   let lostClock = 0;
-  let pendingSave: { resolve: (ok: boolean) => void; promise: Promise<boolean> } | null = null;
-  const repeat = new Map<string, number>();
+  let pendingSave: {
+    resolve: (ok: boolean) => void;
+    promise: Promise<boolean>;
+    /** Still asking the store for the anchors saved before. */
+    waiting: boolean;
+    /** Frames the kept anchors gave no pose. */
+    tries: number;
+  } | null = null;
+  /**
+   * The two anchors this alignment has on the device, restored or saved in this session. A save
+   * after the first keeps them and only says which model points now stand on them: a device can
+   * refuse to delete a handle, so making new ones each time uses up the few it allows.
+   */
+  let keeper: { a: XRAnchor; b: XRAnchor } | null = null;
+  /** `stand`: waiting for the user to look along the view and pull the trigger. */
+  let wantStand = false;
+  /** `stand`: a trigger was pressed since the wait began (not the pull that chose a menu row). */
+  let standArmed = false;
+  /** `stand`: that trigger was let go: place from the head on the next frame that has its pose. */
+  let standNow = false;
+  /** What the thumbstick does to the placed model. */
+  let tool: ARTool = "turn";
+  /** The host locked the placement: the sticks and the save button leave it alone. */
+  let locked = false;
+  /**
+   * Where the alignment's two anchors stood when the model was last placed by them. The model
+   * follows them from there: the room's coordinates may jump (the device re-centres them when
+   * the user leaves its boundary), the anchors stay on the real points.
+   */
+  let followA: Vector3 | null = null;
+  let followB: Vector3 | null = null;
+  /** The trigger held now moved the height: its release is not a touch of a floor mark. */
+  let liftHeld = false;
+  /** Why the last save could not be kept on the device (the `kept` state's panel says it). */
+  let keptWhy = "";
+  const isPlaced = () => state === "aligned" || state === "saved" || state === "kept";
+  /** `stand`: the first floor mark touched with a controller, waiting for the second. */
+  let touchA: Vector3 | null = null;
+  /** `stand`: the marks the model was placed by (the first, and the unit direction to the second). */
+  let touched: { a: Vector3; f: Vector3 } | null = null;
   const pressed = new Map<string, boolean>();
   let hudPending: { title: string; lines: string[] } | null = null;
+  /** Seconds the message in view still has (0: it stays). */
+  let hudLeft = 0;
 
   const geometry = new RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
   const material = new MeshBasicMaterial({ color: 0xffffff });
@@ -159,6 +219,10 @@ export function createAR(ctx: KitContext): ARController {
   const m1 = new Matrix4();
   const m2 = new Matrix4();
   const v1 = new Vector3();
+  const v2 = new Vector3();
+  /** A stick axis past the dead zone, rescaled to -1..1. */
+  const stick = (v: number): number =>
+    Math.abs(v) < STICK_DEAD ? 0 : (v - Math.sign(v) * STICK_DEAD) / (1 - STICK_DEAD);
 
   function applyPlacement(): void {
     if (!target) return;
@@ -202,9 +266,24 @@ export function createAR(ctx: KitContext): ARController {
 
   function onSelectEnd({ ray }: { ray: RaySource }): void {
     if (!active) return;
+    // A host asked for a controller's position (takePoint): this pull is its answer.
+    if (pointTaker && ray.kind === "controller") {
+      const give = pointTaker;
+      pointTaker = null;
+      give([ray.origin.x, ray.origin.y, ray.origin.z]);
+      return;
+    }
+    // A trigger a panel took is the panel's.
+    if (ctx.uiCapture) return;
     if (ray.handedness !== "none") preferredHand = ray.handedness;
     if (onsite) {
-      onsitePick();
+      if (onsite.start === "stand") {
+        // Waited for: placed from where the head looks now. A controller down at the floor is a
+        // touch of a floor mark instead.
+        const atFloor = ray.kind === "controller" && ray.origin.dot(ctx.up) <= TOUCH_HEIGHT;
+        if (wantStand && standArmed && !atFloor) standNow = true;
+        else touchMark(ray);
+      } else onsitePick();
       return;
     }
     if (phase === "placed") {
@@ -215,6 +294,9 @@ export function createAR(ctx: KitContext): ARController {
     if (hasHit) place();
   }
   const offSelectEnd = ctx.events.on("selectend", onSelectEnd);
+  const offSelectStart = ctx.events.on("selectstart", () => {
+    if (active && wantStand && !ctx.uiCapture) standArmed = true;
+  });
 
   async function requestViewerSource(gen: number): Promise<void> {
     const s = session;
@@ -303,14 +385,29 @@ export function createAR(ctx: KitContext): ARController {
         : viewerSource
           ? frame.getHitTestResults(viewerSource)
           : null;
-    if (!results || results.length === 0) return;
-    const pose = results[0].getPose(ref);
-    if (!pose) return;
-    hitMatrix.fromArray(pose.transform.matrix);
-    const p = pose.transform.position;
-    hitPoint.set(p.x, p.y, p.z);
-    hitResult = results[0];
-    hasHit = true;
+    if (!results) return;
+    // The nearest surface that is not a hand: a headset's depth sensing reports the hands too.
+    for (const result of results) {
+      const pose = result.getPose(ref);
+      if (!pose) continue;
+      const p = pose.transform.position;
+      hitPoint.set(p.x, p.y, p.z);
+      if (nearController(hitPoint)) continue;
+      hitMatrix.fromArray(pose.transform.matrix);
+      hitResult = result;
+      hasHit = true;
+      return;
+    }
+  }
+
+  /** Within HAND_CLEARANCE of a controller: the hand holding it, not a surface. */
+  function nearController(point: Vector3): boolean {
+    for (const ray of ctx.input.rays()) {
+      if (ray.kind === "controller" && ray.origin.distanceToSquared(point) < HAND_CLEARANCE ** 2) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function requestAnchor(result: XRHitTestResult): void {
@@ -365,27 +462,55 @@ export function createAR(ctx: KitContext): ARController {
     applyPlacement();
   }
 
-  function updateTurn(): void {
-    const step = ctx.options.ar.rotateStepDegrees * DEG;
+  /**
+   * Table-top: the thumbstick turns the placed model, smoothly (left/right, `ar.rotateSpeed` at
+   * full deflection); with the grip held it slides the model on its plane instead (the way the
+   * user looks is forward, `ar.moveSpeed`). Nothing moves while a panel has the controllers.
+   */
+  function updateSticks(dt: number): void {
+    if (phase === "aiming" || ctx.uiCapture) return;
+    stepTool(["turn", "move"]);
+    let moved = false;
     for (const ray of ctx.input.rays()) {
       if (ray.kind !== "controller" || !ray.gamepad) continue;
       const axes = ray.gamepad.axes;
-      // xr-standard mapping: thumbstick x is axis 2; a lone stick reports it at 0.
-      const x = (axes.length >= 4 ? axes[2] : axes[0]) ?? 0;
-      const isArmed = armed.get(ray.id) ?? true;
-      if (isArmed && Math.abs(x) > TURN_FIRE) {
-        armed.set(ray.id, false);
-        if (phase === "aiming") continue;
+      // xr-standard mapping: the thumbstick is axes 2 and 3; a lone stick reports at 0 and 1.
+      const four = axes.length >= 4;
+      const x = stick((four ? axes[2] : axes[0]) ?? 0);
+      const y = stick((four ? axes[3] : axes[1]) ?? 0);
+      if (!x && !y) continue;
+      // The grip held is a shortcut for the move tool.
+      const use = ray.gamepad.buttons?.[BUTTON_GRIP]?.pressed ? "move" : tool;
+      const k = ctx.options.ar.moveSpeed * dt;
+      if (use === "turn") {
+        if (!x) continue;
         // Pushing right turns the model clockwise seen from above.
-        turn -= Math.sign(x) * step;
-        applyPlacement();
-      } else if (!isArmed && Math.abs(x) < TURN_REARM) {
-        armed.set(ray.id, true);
+        turn -= x * ctx.options.ar.rotateSpeed * DEG * dt;
+      } else {
+        if (use === "move") {
+          const world = ctx.renderer.xr.getCamera().matrixWorld;
+          v1.setFromMatrixColumn(world, 2).negate();
+          v1.addScaledVector(ctx.up, -v1.dot(ctx.up));
+          if (v1.lengthSq() < 1e-6) continue;
+          v1.normalize();
+          v2.crossVectors(v1, ctx.up);
+          // Forward on the stick is negative.
+          v2.multiplyScalar(x * k).addScaledVector(v1, -y * k);
+        } else {
+          if (!y) continue;
+          v2.copy(ctx.up).multiplyScalar(-y * k);
+        }
+        placedPoint.add(v2);
+        // The anchor keeps holding the model, from its new spot.
+        anchorOffset.add(v2);
       }
+      moved = true;
     }
+    if (moved) applyPlacement();
   }
 
   function updateReticle(): void {
+    // On site: while a mark is asked for.
     reticle.visible =
       hasHit && (onsite ? state === "pick-a" || state === "pick-b" : phase !== "placed");
     if (!reticle.visible) return;
@@ -461,14 +586,21 @@ export function createAR(ctx: KitContext): ARController {
   const cm = (m: number | null) => `${((m ?? 0) * 100).toFixed(1)} cm`;
 
   /** The panel is written from `update`, once the panel module runs, so the first text is not lost. */
-  function showHud(title: string, lines: string[] = []): void {
+  /** `seconds`: a message that says something is done goes by itself; 0 stays until replaced. */
+  function showHud(title: string, lines: string[] = [], seconds = 0): void {
     hudPending = { title, lines: lines.slice(0, 3) };
+    hudLeft = seconds;
   }
 
-  function flushHud(): void {
-    if (!hudPending) return;
-    ctx.hud.show(hudPending.title, hudPending.lines);
-    hudPending = null;
+  function flushHud(dt = 0): void {
+    if (hudPending) {
+      ctx.hud.show(hudPending.title, hudPending.lines);
+      hudPending = null;
+      return;
+    }
+    if (hudLeft <= 0) return;
+    hudLeft -= dt;
+    if (hudLeft <= 0) ctx.hud.hide();
   }
 
   function pickHud(mark: "a" | "b", notice?: string): void {
@@ -478,11 +610,42 @@ export function createAR(ctx: KitContext): ARController {
   }
 
   function placedHud(): void {
+    const error = onsite?.start === "stand" ? "" : `, error ${cm(errorM)}`;
     if (state === "saved") {
-      showHud(`${restored ? "Restored" : "Saved"}, error ${cm(errorM)}`, [CONTROLS_HINT]);
+      showHud(`${restored ? "Restored" : "Saved"}${error}`, [MENU_HINT], DONE_SECONDS);
+    } else if (state === "kept") {
+      // The short reason here; all of it in alignmentNote, for a host with room to show it.
+      showHud("Placed, not saved", [`Why: ${keptWhy.split(":")[0]}`, MENU_HINT], 2 * DONE_SECONDS);
     } else {
-      showHud(`Aligned, error ${cm(errorM)}`, [CONTROLS_HINT]);
+      toolHud(error);
     }
+  }
+
+  /** The three tools in view, the stick's own in brackets, with what switches and what saves. */
+  function toolHud(error = "", seconds = 0): void {
+    const strip = (["turn", "move", "height"] as const)
+      .map((t) => (t === tool ? `[ ${t.toUpperCase()} ]` : t.toUpperCase()))
+      .join("  ");
+    showHud(strip, ["Press the stick: next", `A or X: save${error}`, MENU_HINT], seconds);
+  }
+
+  /**
+   * The thumbstick pressed down steps to the next tool (`tools` in order), on either hand, so
+   * the menu is not needed to go from turning to moving. True when it did.
+   */
+  function stepTool(tools: readonly ARTool[]): boolean {
+    let stepped = false;
+    for (const ray of ctx.input.rays()) {
+      if (ray.kind !== "controller" || !ray.gamepad) continue;
+      const key = `${ray.id}:${BUTTON_STICK}`;
+      const down = !!ray.gamepad.buttons?.[BUTTON_STICK]?.pressed;
+      const was = pressed.get(key) ?? false;
+      pressed.set(key, down);
+      if (!down || was || stepped) continue;
+      tool = tools[(tools.indexOf(tool) + 1) % tools.length];
+      stepped = true;
+    }
+    return stepped;
   }
 
   function setState(next: AlignmentState, notice?: string): void {
@@ -493,7 +656,7 @@ export function createAR(ctx: KitContext): ARController {
     }
     if (next === state) return;
     state = next;
-    if (next === "aligned" || next === "saved") placedHud();
+    if (next === "aligned" || next === "saved" || next === "kept") placedHud();
     ctx.events.emit("alignment", { state: next, errorM, restored });
   }
 
@@ -527,6 +690,9 @@ export function createAR(ctx: KitContext): ARController {
     modelB.fromArray(alignment.b).multiplyScalar(k);
     correction.identity();
     state = null;
+    wantStand = false;
+    touchA = null;
+    touched = null;
     errorM = null;
     restored = false;
     nudged = false;
@@ -546,13 +712,15 @@ export function createAR(ctx: KitContext): ARController {
     } catch {
       saved = false;
     }
+    // Leftovers of failed saves go first: they use up the few handles a device allows a site.
+    if (s && supported) void store.sweep(s);
     if (!s || !supported || !saved) {
-      setState("pick-a");
+      beginPlacing();
       return;
     }
     setState("restoring");
     const token = pickToken;
-    let request: Promise<{ a: XRAnchor; b: XRAnchor } | null>;
+    let request: Promise<{ a: XRAnchor; b: XRAnchor; points?: number[] } | null>;
     try {
       request = store.restore(s, alignment.id);
     } catch (error) {
@@ -567,6 +735,11 @@ export function createAR(ctx: KitContext): ARController {
         }
         persistent.add(r.a);
         persistent.add(r.b);
+        keeper = { a: r.a, b: r.b };
+        if (r.points) {
+          modelA.fromArray(r.points, 0);
+          modelB.fromArray(r.points, 3);
+        }
         restoredAnchors = r;
         restoreClock = 0;
       },
@@ -591,9 +764,10 @@ export function createAR(ctx: KitContext): ARController {
     hudPending = null;
     ctx.hud.hide();
     persistent.clear();
+    keeper = null;
     onsite = null;
     state = null;
-    repeat.clear();
+    wantStand = false;
     pressed.clear();
   }
 
@@ -681,7 +855,136 @@ export function createAR(ctx: KitContext): ARController {
     restored = false;
     nudged = false;
     if (target) target.visible = false;
-    setState("pick-a");
+    beginPlacing(true);
+  }
+
+  /** Nothing to restore: the marks, or (`stand`) the model placed from where the user stands. */
+  function beginPlacing(asked = false): void {
+    touched = null;
+    if (onsite?.start === "stand") {
+      touchA = null;
+      // A host that lets the user choose where they stand first (hold) places on its realign().
+      if (onsite.hold && !asked) {
+        showHud("Where do you stand?", [MENU_HINT]);
+        return;
+      }
+      // Not at once: the head is turned to a panel when a menu row asks for this. The model is
+      // placed when the user looks along the view and pulls the trigger.
+      wantStand = true;
+      standArmed = false;
+      standNow = false;
+      showHud("Look along the view", ["Then pull the trigger"]);
+    } else setState("pick-a");
+  }
+
+  /** The flat forward of a pose matrix (it looks along its -Z; straight down: its top). */
+  function flatForward(e: ArrayLike<number>, out: Vector3): boolean {
+    out.set(-e[8], -e[9], -e[10]);
+    out.addScaledVector(ctx.up, -out.dot(ctx.up));
+    if (out.lengthSq() < 1e-8) {
+      out.set(e[4], e[5], e[6]);
+      out.addScaledVector(ctx.up, -out.dot(ctx.up));
+    }
+    if (out.lengthSq() < 1e-8) return false;
+    out.normalize();
+    return true;
+  }
+
+  /** `stand`: point A under the head, point B ahead of it; then it is the user's to adjust. */
+  function standPlace(frame: XRFrame, ref: XRReferenceSpace): void {
+    const pose = frame.getViewerPose?.(ref);
+    const f = new Vector3();
+    if (!pose || !flatForward(pose.transform.matrix, f)) return;
+    wantStand = false;
+    standNow = false;
+    const p = pose.transform.position;
+    const ra = new Vector3(p.x, p.y, p.z);
+    // The floor is the origin's height where the space has one; else an eye height below the head.
+    const h = ra.dot(ctx.up);
+    ra.addScaledVector(ctx.up, -(h > 0.5 ? h : ctx.options.vr.eyeHeight));
+    placeFrom(ra, f);
+  }
+
+  /** `stand`: point A at `ra`, point B along the flat unit direction `f`; the user's to adjust. */
+  function placeFrom(ra: Vector3, f: Vector3): void {
+    const d = v1.subVectors(modelB, modelA);
+    const rise = d.dot(ctx.up);
+    const span = Math.max(1, d.addScaledVector(ctx.up, -rise).length());
+    const rb = ra.clone().addScaledVector(f, span).addScaledVector(ctx.up, rise);
+    if (!solveAndPlace(ra, rb)) return;
+    // No anchors yet: a save makes them where the model stands then.
+    nudged = true;
+    errorM = 0;
+    restored = false;
+    if (state === "aligned") placedHud();
+    else setState("aligned");
+  }
+
+  /**
+   * `stand`, the precise way: two marks on the floor, touched with a controller. The trigger
+   * pulled with the controller down at the floor takes its position: the first touch is point
+   * A, the second gives the direction to point B (anywhere along that line, the farther the
+   * better). Controller tracking is the headset's most exact measure, and needs no camera.
+   */
+  function touchMark(ray: RaySource): void {
+    const lifted = liftHeld;
+    liftHeld = false;
+    if (lifted) return;
+    if (ray.kind !== "controller" || (!isPlaced() && !wantStand)) {
+      return;
+    }
+    const p = ray.origin;
+    const h = p.dot(ctx.up);
+    if (h > TOUCH_HEIGHT) return;
+    // On the floor itself, whatever the controller's own height above it.
+    const point = p.clone().addScaledVector(ctx.up, -h);
+    if (!touchA) {
+      touchA = point;
+      showHud("First mark taken", ["Touch the second mark, pull the trigger"]);
+      return;
+    }
+    const f = point.clone().sub(touchA);
+    if (f.lengthSq() < TOUCH_MIN_SPAN ** 2) {
+      showHud("The marks are too close", ["Touch the second mark, pull the trigger"]);
+      return;
+    }
+    const ra = touchA;
+    touchA = null;
+    wantStand = false;
+    placeFrom(ra, f.normalize());
+    if (state === "aligned") touched = { a: ra, f };
+  }
+
+  /**
+   * The model points that sit on the two touched marks now, fine-tuning included: the alignment
+   * another device gets the same placement from, by touching the same marks. In scene units.
+   */
+  function marksAlignment(): Pick<ARAlignment, "a" | "b"> | null {
+    if (!touched || !onsite || !isPlaced()) return null;
+    const k = ctx.options.metresPerUnit;
+    const inverse = m2.copy(correction).invert();
+    const d = v1.subVectors(modelB, modelA);
+    const span = Math.max(1, d.addScaledVector(ctx.up, -d.dot(ctx.up)).length());
+    const a = touched.a.clone().applyMatrix4(inverse).divideScalar(k);
+    const b = touched.a
+      .clone()
+      .addScaledVector(touched.f, span)
+      .applyMatrix4(inverse)
+      .divideScalar(k);
+    return { a: [a.x, a.y, a.z], b: [b.x, b.y, b.z] };
+  }
+
+  /** Other points (and id) for the same placement: the model stays where it is, to be saved anew. */
+  function rebase(alignment: ARAlignment): void {
+    if (!active || !onsite) return;
+    onsite = alignment;
+    const k = ctx.options.metresPerUnit;
+    modelA.fromArray(alignment.a).multiplyScalar(k);
+    modelB.fromArray(alignment.b).multiplyScalar(k);
+    if (!isPlaced()) return;
+    nudged = true;
+    revision++;
+    setState("aligned");
   }
 
   /** Where model point A sits now: the pivot of turns, so a turn never moves mark A. */
@@ -689,31 +992,21 @@ export function createAR(ctx: KitContext): ARController {
     return out.copy(modelA).applyMatrix4(correction);
   }
 
-  /** The head's forward on the ground, in scene coordinates (a camera looks along its -Z). */
+  /** The head's forward on the ground, in scene coordinates. */
   function headForward(out = new Vector3()): Vector3 {
     // Its world matrix is written by three.js on render, so it is at most a frame old.
     const camera = ctx.renderer.xr.getCamera?.();
-    if (camera) {
-      const e = camera.matrixWorld.elements;
-      out.set(-e[8], -e[9], -e[10]);
-      out.addScaledVector(ctx.up, -out.dot(ctx.up));
-      // Looking straight down: the top of the view points forward.
-      if (out.lengthSq() < 1e-8) {
-        out.set(e[4], e[5], e[6]);
-        out.addScaledVector(ctx.up, -out.dot(ctx.up));
-      }
-      if (out.lengthSq() > 1e-8) return out.normalize();
-    }
+    if (camera && flatForward(camera.matrixWorld.elements, out)) return out;
     return forwardAtYawZero(ctx.options.up, out);
   }
 
-  function applyNudge(turnDeg: number, right: number, forward: number): void {
-    if (state !== "aligned" && state !== "saved") return;
-    if (turnDeg === 0 && right === 0 && forward === 0) return;
+  function applyNudge(turnDeg: number, right: number, forward: number, lift = 0): void {
+    if (!isPlaced()) return;
+    if (turnDeg === 0 && right === 0 && forward === 0 && lift === 0) return;
     const f = headForward();
     // Right-handed: forward x up points right.
     const r = new Vector3().crossVectors(f, ctx.up).normalize();
-    const move = r.multiplyScalar(right).addScaledVector(f, forward);
+    const move = r.multiplyScalar(right).addScaledVector(f, forward).addScaledVector(ctx.up, lift);
     correction.copy(nudgeMatrix(correction, pivotA(), ctx.up, turnDeg, move));
     applyPlacement();
     nudged = true;
@@ -721,56 +1014,46 @@ export function createAR(ctx: KitContext): ARController {
     setState("aligned");
   }
 
-  /** One step on the push, then one every NUDGE_REPEAT_S while held. */
-  function axisSteps(key: string, value: number, dt: number): number {
-    if (!(Math.abs(value) > NUDGE_FIRE)) {
-      repeat.delete(key);
-      return 0;
-    }
-    const held = repeat.get(key);
-    if (held === undefined) {
-      repeat.set(key, 0);
-      return 1;
-    }
-    let t = held + dt;
-    if (t < NUDGE_REPEAT_S) {
-      repeat.set(key, t);
-      return 0;
-    }
-    // At most one step a frame, so a stalled frame does not jump.
-    t = Math.min(t - NUDGE_REPEAT_S, NUDGE_REPEAT_S);
-    repeat.set(key, t);
-    return 1;
-  }
-
   function updateGamepads(dt: number): void {
     const controllers = ctx.input.rays().filter((r) => r.kind === "controller" && r.gamepad);
-    const rights = controllers.filter((r) => r.handedness === "right");
-    const sticks = rights.length > 0 ? rights : controllers.slice(0, 1);
+    // A or X saves, on either hand: a shortcut for the host's Save (B and Y open its panels).
     for (const ray of controllers) {
-      const buttons = ray.gamepad?.buttons ?? [];
-      for (const index of [BUTTON_SAVE, BUTTON_REALIGN]) {
-        const key = `${ray.id}:${index}`;
-        const down = !!buttons[index]?.pressed;
-        const was = pressed.get(key) ?? false;
-        pressed.set(key, down);
-        if (!down || was) continue;
-        if (index === BUTTON_SAVE) void saveAlignment();
-        else realign();
-      }
+      const key = `${ray.id}:${BUTTON_SAVE}`;
+      const down = !!ray.gamepad?.buttons?.[BUTTON_SAVE]?.pressed;
+      const was = pressed.get(key) ?? false;
+      pressed.set(key, down);
+      if (down && !was && !ctx.uiCapture && !locked) void saveAlignment();
     }
-    for (const ray of sticks) {
-      const axes = ray.gamepad?.axes ?? [];
+    // A panel has the controllers: the sticks are the panel's.
+    if (!isPlaced() || ctx.uiCapture || locked) return;
+    // Saved or kept, the strip shows for a moment, so the step is seen.
+    if (stepTool(["turn", "move", "height"])) toolHud("", state === "aligned" ? 0 : DONE_SECONDS);
+    // Either hand's stick drives the tool; the grip held is a shortcut for move, the trigger held
+    // for height (forward on the stick is negative).
+    for (const ray of controllers) {
+      const pad = ray.gamepad;
+      const axes = pad?.axes ?? [];
       // xr-standard mapping: the thumbstick is axes 2 and 3; a lone stick reports 0 and 1.
-      const x = (axes.length >= 4 ? axes[2] : axes[0]) ?? 0;
-      const y = (axes.length >= 4 ? axes[3] : axes[1]) ?? 0;
-      const fineTune = state === "aligned" || state === "saved";
-      const turnSteps = axisSteps(`${ray.id}:x`, fineTune ? x : 0, dt);
-      const moveSteps = axisSteps(`${ray.id}:y`, fineTune ? y : 0, dt);
-      // Right turns clockwise seen from above; pushing the stick forward reports negative y.
-      const turnDeg = turnSteps ? -Math.sign(x) * NUDGE_TURN_DEG : 0;
-      const forward = moveSteps ? -Math.sign(y) * NUDGE_MOVE_M : 0;
-      if (turnDeg || forward) applyNudge(turnDeg, 0, forward);
+      const four = axes.length >= 4;
+      // Squared: a light push is a fine correction.
+      const x = stick((four ? axes[2] : axes[0]) ?? 0);
+      const y = stick((four ? axes[3] : axes[1]) ?? 0);
+      const sx = x * Math.abs(x);
+      const sy = y * Math.abs(y);
+      const k = NUDGE_MOVE_M_S * dt;
+      const held = pad?.buttons?.[BUTTON_TRIGGER]?.pressed
+        ? "height"
+        : pad?.buttons?.[BUTTON_GRIP]?.pressed
+          ? "move"
+          : null;
+      const use = held ?? tool;
+      if (use === "height") {
+        if (!sy) continue;
+        // This pull was for the height: its release touches no floor mark.
+        if (held) liftHeld = true;
+        applyNudge(0, 0, 0, -sy * NUDGE_LIFT_M_S * dt);
+      } else if (use === "move") applyNudge(0, sx * k, -sy * k);
+      else applyNudge(-sx * NUDGE_TURN_DEG_S * dt, 0, 0);
     }
   }
 
@@ -802,13 +1085,57 @@ export function createAR(ctx: KitContext): ARController {
       }
     } else if (state === "lost") {
       lostClock += dt;
-      if (lostClock >= LOST_HOLD_S) setState("pick-a");
+      if (lostClock >= LOST_HOLD_S) beginPlacing();
     }
+    if (wantStand && standNow) standPlace(frame, ref);
+    followAnchors(frame, ref);
     updateGamepads(dt);
   }
 
-  function saveUnavailable(): boolean {
-    if (state === "aligned" || state === "saved") showHud(SAVE_UNAVAILABLE, [CONTROLS_HINT]);
+  /**
+   * Saved, or held for the session, and not moved since: the model stays on its two anchors.
+   * Only a real jump moves it (FOLLOW_STEP_M), so the anchors' own small tremble does not.
+   */
+  function followAnchors(frame: XRFrame, ref: XRReferenceSpace): void {
+    const holds = (state === "saved" || state === "kept") && !nudged && !pendingSave;
+    if (!holds || !anchorA || !anchorB) {
+      followA = followB = null;
+      return;
+    }
+    const pa = anchorPosition(frame, ref, anchorA);
+    const pb = anchorPosition(frame, ref, anchorB);
+    if (!pa || !pb) return;
+    if (!followA || !followB) {
+      followA = pa;
+      followB = pb;
+      return;
+    }
+    if (pa.distanceTo(followA) < FOLLOW_STEP_M && pb.distanceTo(followB) < FOLLOW_STEP_M) return;
+    // The points that stood on the anchors then stand on them again.
+    const wa = followA.clone().applyMatrix4(m2.copy(correction).invert());
+    const wb = followB.clone().applyMatrix4(m2);
+    let solution: ReturnType<typeof solveTwoPoint>;
+    try {
+      solution = solveTwoPoint(wa, wb, pa, pb, ctx.up);
+    } catch {
+      return;
+    }
+    followA = pa;
+    followB = pb;
+    correction.copy(solution.matrix);
+    realA.copy(pivotA());
+    applyPlacement();
+  }
+
+  /**
+   * The device cannot keep the alignment (`why` says what failed): it holds for this session, so
+   * the user is done placing; a later A tries again.
+   */
+  function saveUnavailable(why = "no anchors"): boolean {
+    if (!isPlaced()) return false;
+    keptWhy = why;
+    if (state === "kept") placedHud();
+    else setState("kept");
     return false;
   }
 
@@ -817,7 +1144,7 @@ export function createAR(ctx: KitContext): ARController {
    * nudge they no longer sit at the real points, so new ones are made at the corrected points.
    */
   function saveAlignment(): Promise<boolean> {
-    if (!active || !onsite || (state !== "aligned" && state !== "saved")) {
+    if (!active || !onsite || !isPlaced()) {
       return Promise.resolve(false);
     }
     if (state === "saved") return Promise.resolve(true);
@@ -830,23 +1157,79 @@ export function createAR(ctx: KitContext): ARController {
       supported = false;
     }
     if (!s || !supported) return Promise.resolve(saveUnavailable());
-    if (!nudged && anchorA && anchorB) return commitSave(anchorA, anchorB, false);
-    // New anchors need an active frame: they are made in the next update.
+    if (!nudged && !keeper && anchorA && anchorB) return commitSave(anchorA, anchorB, false);
+    // Anchors are read and made in a frame: the next update does it.
     let resolve: (ok: boolean) => void = () => {};
     const promise = new Promise<boolean>((r) => {
       resolve = r;
     });
-    pendingSave = { resolve, promise };
+    const request = { resolve, promise, waiting: false, tries: 0 };
+    pendingSave = request;
+    // Anchors saved before and not in hand (forgotten, or not found when the session began): asked
+    // for once more, to use them again.
+    if (!keeper) {
+      const alignment = onsite;
+      request.waiting = true;
+      const token = pickToken;
+      let asked: Promise<{ a: XRAnchor; b: XRAnchor } | null>;
+      try {
+        asked = store.restore(s, alignment.id, true);
+      } catch {
+        asked = Promise.resolve(null);
+      }
+      asked
+        .then(
+          (r) => {
+            if (r && token === pickToken && active && onsite === alignment) {
+              persistent.add(r.a);
+              persistent.add(r.b);
+              keeper = { a: r.a, b: r.b };
+            }
+          },
+          () => {},
+        )
+        .finally(() => {
+          request.waiting = false;
+        });
+    }
     return promise;
   }
 
   function saveAtCorrectedPoints(frame: XRFrame, ref: XRReferenceSpace): void {
     const request = pendingSave;
-    if (!request) return;
+    if (!request || request.waiting) return;
+    // The anchors this alignment already has: the model points that stand on them now are saved,
+    // and nothing new is asked of the device.
+    if (keeper && onsite) {
+      const pa = anchorPosition(frame, ref, keeper.a);
+      const pb = anchorPosition(frame, ref, keeper.b);
+      if (pa && pb) {
+        const inverse = m2.copy(correction).invert();
+        pa.applyMatrix4(inverse);
+        pb.applyMatrix4(inverse);
+        const d = v1.subVectors(pb, pa);
+        const apart = d.addScaledVector(ctx.up, -d.dot(ctx.up)).length() >= REPOINT_MIN_SPAN;
+        if (apart && store.repoint(onsite.id, [...pa.toArray(), ...pb.toArray()])) {
+          pendingSave = null;
+          modelA.copy(pa);
+          modelB.copy(pb);
+          anchorA = keeper.a;
+          anchorB = keeper.b;
+          touched = null;
+          nudged = false;
+          setState("saved");
+          request.resolve(true);
+          return;
+        }
+      } else if (++request.tries < REPOINT_FRAMES) {
+        // Not tracked this frame: a moment's patience before new anchors are made.
+        return;
+      }
+    }
     pendingSave = null;
     const create = frame.createAnchor?.bind(frame);
     if (!create || typeof XRRigidTransform === "undefined") {
-      request.resolve(saveUnavailable());
+      request.resolve(saveUnavailable("no anchors"));
       return;
     }
     const pa = pivotA();
@@ -862,14 +1245,14 @@ export function createAR(ctx: KitContext): ARController {
         ),
       );
     } catch {
-      request.resolve(saveUnavailable());
+      request.resolve(saveUnavailable("anchor refused"));
       return;
     }
     Promise.allSettled(made).then((results) => {
       const anchors = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
       if (anchors.length < 2 || token !== pickToken || !active) {
         for (const a of anchors) a.delete();
-        request.resolve(token === pickToken && active ? saveUnavailable() : false);
+        request.resolve(token === pickToken && active ? saveUnavailable("anchor not made") : false);
         return;
       }
       commitSave(anchors[0], anchors[1], true).then(request.resolve);
@@ -882,23 +1265,37 @@ export function createAR(ctx: KitContext): ARController {
     if (!s || !alignment) return false;
     const token = pickToken;
     const rev = revision;
-    let ok = false;
+    let ok: boolean | string = false;
     try {
-      ok = await store.save(s, alignment.id, a, b);
+      // With the model points the anchors stand for: a restore places by them, whatever points
+      // the next session's alignment carries.
+      ok = await store.save(s, alignment.id, a, b, [...modelA.toArray(), ...modelB.toArray()]);
     } catch (error) {
       console.warn("[llhil-webxr] the alignment could not be saved", error);
       ok = false;
     }
-    if (!ok) {
+    if (ok !== true) {
+      const current = token === pickToken && active;
       if (fresh) {
-        a.delete();
-        b.delete();
+        if (current && rev === revision) {
+          // Not kept on the device, but the two anchors hold the model for this session: it
+          // stays on the real points when the room's coordinates jump.
+          deleteAnchor(anchorA);
+          deleteAnchor(anchorB);
+          anchorA = a;
+          anchorB = b;
+          nudged = false;
+        } else {
+          a.delete();
+          b.delete();
+        }
       }
-      if (token === pickToken && active) saveUnavailable();
+      if (current) saveUnavailable(typeof ok === "string" ? ok : "not kept");
       return false;
     }
     persistent.add(a);
     persistent.add(b);
+    keeper = { a, b };
     if (token !== pickToken || !active) return true;
     if (fresh) {
       deleteAnchor(anchorA);
@@ -917,8 +1314,7 @@ export function createAR(ctx: KitContext): ARController {
   async function forgetAlignment(id: string): Promise<void> {
     await store.forget(session, id);
     if (!active || onsite?.id !== id) return;
-    // The anchors in use were the saved ones: they are no longer kept, so saving makes new ones.
-    for (const a of [anchorA, anchorB]) if (a) persistent.delete(a);
+    // Nothing is saved any more; the two anchors stay in hand, and the next save uses them again.
     nudged = true;
     if (state === "saved") setState("aligned");
   }
@@ -943,7 +1339,8 @@ export function createAR(ctx: KitContext): ARController {
     hasHit = false;
     hitResult = null;
     phase = "aiming";
-    armed.clear();
+    pointTaker?.(null);
+    pointTaker = null;
     session = null;
   }
 
@@ -960,12 +1357,74 @@ export function createAR(ctx: KitContext): ARController {
       const turnDeg = Number.isFinite(n.turnDeg) ? (n.turnDeg as number) : 0;
       const right = Number.isFinite(n.move?.[0]) ? (n.move?.[0] as number) : 0;
       const forward = Number.isFinite(n.move?.[1]) ? (n.move?.[1] as number) : 0;
-      applyNudge(turnDeg, right, forward);
+      applyNudge(turnDeg, right, forward, Number.isFinite(n.lift) ? (n.lift as number) : 0);
     },
     saveAlignment,
     forgetAlignment,
     get alignmentState() {
       return active && onsite ? state : null;
+    },
+    get onSite() {
+      return active && onsite !== null;
+    },
+    get alignmentNote() {
+      return active && state === "kept" ? keptWhy : null;
+    },
+    get locked(): boolean {
+      return locked;
+    },
+    set locked(next: boolean) {
+      locked = next === true;
+    },
+    get tool(): ARTool {
+      return tool;
+    },
+    set tool(next: ARTool) {
+      if (next !== "turn" && next !== "move" && next !== "height") return;
+      tool = next;
+      if (active && onsite && state === "aligned") placedHud();
+    },
+    /** On site, placed: the model's metres to scene coordinates, column-major; else null. */
+    get alignmentMatrix(): number[] | null {
+      return active && onsite && isPlaced() ? Array.from(correction.elements) : null;
+    },
+    takePoint(): Promise<[number, number, number] | null> {
+      pointTaker?.(null);
+      pointTaker = null;
+      if (!active) return Promise.resolve(null);
+      return new Promise((resolve) => {
+        pointTaker = resolve;
+      });
+    },
+    /** Table-top: where the placed model stands (its base point, turn in degrees, scale); null until placed. */
+    get placement(): ARPlacement | null {
+      if (!active || onsite || phase === "aiming") return null;
+      return { point: [placedPoint.x, placedPoint.y, placedPoint.z], rotation: turn / DEG, scale };
+    },
+    setPlacement(p: ARPlacement): void {
+      if (!active || onsite || !target) return;
+      if (p.scale > 0 && Number.isFinite(p.scale)) scale = p.scale;
+      if (Number.isFinite(p.rotation)) turn = p.rotation * DEG;
+      placedPoint.fromArray(p.point);
+      phase = "placed";
+      reticle.visible = false;
+      target.visible = true;
+      // Placed by the host, not on a hit: no anchor holds it.
+      dropAnchor();
+      applyPlacement();
+    },
+    get alignmentMarks() {
+      return active ? marksAlignment() : null;
+    },
+    rebaseAlignment: rebase,
+    /** Table-top: the model's turn about up, degrees (positive turns left seen from above). */
+    get rotation(): number {
+      return turn / DEG;
+    },
+    setRotation(degrees: number): void {
+      if (!Number.isFinite(degrees)) return;
+      turn = degrees * DEG;
+      if (active && !onsite && phase !== "aiming") applyPlacement();
     },
     /**
      * Model scale factor (1 = 1:1). Before a session it sets the initial scale; once placed it
@@ -1010,15 +1469,16 @@ export function createAR(ctx: KitContext): ARController {
         updateOnsite(frame, ref, dt);
       } else {
         updateAnchor(frame, ref);
-        updateTurn();
+        updateSticks(dt);
       }
       updateReticle();
-      flushHud();
+      flushHud(dt);
     },
     stop,
     dispose(): void {
       stop();
       offSelectEnd();
+      offSelectStart();
       geometry.dispose();
       material.dispose();
     },

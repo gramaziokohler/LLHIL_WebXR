@@ -491,7 +491,7 @@ describe("menu-button", () => {
     now.mockRestore();
   });
 
-  it("is VR only and ignores hands and sources without a side", () => {
+  it("ignores hands and sources without a side; fires in AR too", () => {
     const t = menuSetup();
     const none = padSource("none");
     const hand = padSource("left");
@@ -509,6 +509,6 @@ describe("menu-button", () => {
     dispatch(ar.xr.controllers[0], "connected", right.source);
     right.buttons[5].pressed = true;
     ar.input.update(frame, 0.016);
-    expect(ar.menu).toEqual([]);
+    expect(ar.menu).toEqual(["right"]);
   });
 });

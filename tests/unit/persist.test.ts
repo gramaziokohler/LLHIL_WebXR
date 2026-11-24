@@ -79,6 +79,47 @@ function setup() {
 }
 
 describe("createAlignmentStore", () => {
+  it("sweeps the handles no saved alignment names (left by failed saves), keeping the saved ones", async () => {
+    const { session, store, xr } = setup();
+    const a = session.anchor();
+    const b = session.anchor();
+    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toBe(true);
+    // Six leftovers: with the two saved, the eight a Quest allows a site.
+    const left = Array.from({ length: 6 }, () => session.anchor());
+    for (const l of left) await l.requestPersistentHandle();
+    expect(session.persistentAnchors).toHaveLength(8);
+    expect(await store.sweep(xr)).toBe(6);
+    expect(session.persistentAnchors.sort()).toEqual([a.handle, b.handle].sort());
+    // The next save sweeps first, so it finds room.
+    for (const l of left) await l.requestPersistentHandle();
+    const c = session.anchor();
+    const d = session.anchor();
+    expect(await store.save(xr, "other", asAnchor(c), asAnchor(d))).toBe(true);
+    expect(session.persistentAnchors.sort()).toEqual(
+      [a.handle, b.handle, c.handle, d.handle].sort(),
+    );
+  });
+
+  it("a handle the device will not delete unloaded is restored first, then deleted", async () => {
+    const { session, store, xr } = setup();
+    const left = Array.from({ length: 3 }, () => session.anchor());
+    for (const l of left) await l.requestPersistentHandle();
+    // As a Quest 3 did: a delete is refused until the handle was restored in this session.
+    const loaded = new Set<string>();
+    const restore = session.restorePersistentAnchor.bind(session);
+    const remove = session.deletePersistentAnchor.bind(session);
+    session.restorePersistentAnchor = async (id: string) => {
+      loaded.add(id);
+      return restore(id);
+    };
+    session.deletePersistentAnchor = async (id: string) => {
+      if (!loaded.has(id)) throw new DOMException("not loaded", "InvalidStateError");
+      return remove(id);
+    };
+    expect(await store.sweep(xr)).toBe(3);
+    expect(session.persistentAnchors).toEqual([]);
+  });
+
   it("saves two anchors and restores them by id", async () => {
     const { storage, session, store, xr } = setup();
     const a = session.anchor();
@@ -140,7 +181,9 @@ describe("createAlignmentStore", () => {
     const a = session.anchor();
     const b = session.anchor();
     b.failHandle = true;
-    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toBe(false);
+    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toMatch(
+      /^handle refused: InvalidStateError: no \(\d+ held/,
+    );
     expect(session.deletedHandles).toEqual([a.handle]);
     expect(session.persistentAnchors).not.toContain(a.handle);
     expect(storage.getItem(KEY("site"))).toBe(before);
@@ -154,7 +197,7 @@ describe("createAlignmentStore", () => {
     const store = createAlignmentStore(storage);
     const a = session.anchor();
     const b = session.anchor();
-    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toBe(false);
+    expect(await store.save(xr, "site", asAnchor(a), asAnchor(b))).toBe("storage full");
     expect(session.deletedHandles.sort()).toEqual([a.handle, b.handle].sort());
     expect(session.persistentAnchors).toEqual([]);
   });
@@ -202,23 +245,29 @@ describe("createAlignmentStore", () => {
     }
   });
 
-  it("forget deletes the device handles and the record", async () => {
+  it("forget keeps the two handles for the next save, and the alignment is gone", async () => {
     const { storage, session, store, xr } = setup();
     const a = session.anchor();
     const b = session.anchor();
-    await store.save(xr, "site", asAnchor(a), asAnchor(b));
+    await store.save(xr, "site", asAnchor(a), asAnchor(b), [0, 0, 0, 4, 0, 0]);
     await store.forget(xr, "site");
-    expect(session.deletedHandles.sort()).toEqual([a.handle, b.handle].sort());
-    expect(session.persistentAnchors).toEqual([]);
-    expect(storage.getItem(KEY("site"))).toBeNull();
-  });
-
-  it("forget without a session only removes the record", async () => {
-    const { storage, session, store, xr } = setup();
-    await store.save(xr, "site", asAnchor(session.anchor()), asAnchor(session.anchor()));
-    await store.forget(null, "site");
+    // Nothing is asked of the device: a headset can refuse to delete, and what it refuses stays.
     expect(session.deletedHandles).toEqual([]);
-    expect(storage.getItem(KEY("site"))).toBeNull();
+    expect(session.persistentAnchors.sort()).toEqual([a.handle, b.handle].sort());
+    expect(store.has("site")).toBe(false);
+    expect(await store.restore(xr, "site")).toBeNull();
+    // The next save asks for them by name and puts other model points on them.
+    const again = await store.restore(xr, "site", true);
+    expect((again?.a as unknown as FakeAnchor).handle).toBe(a.handle);
+    expect(store.repoint("site", [1, 0, 0, 5, 0, 0])).toBe(true);
+    expect(store.has("site")).toBe(true);
+    expect((await store.restore(xr, "site"))?.points).toEqual([1, 0, 0, 5, 0, 0]);
+    expect(session.persistentAnchors).toHaveLength(2);
+    expect(JSON.parse(storage.getItem(KEY("site")) as string)).toMatchObject({
+      a: a.handle,
+      b: b.handle,
+    });
+    expect(store.repoint("nothing-saved", [0, 0, 0, 1, 0, 0])).toBe(false);
   });
 
   it("reports unsupported sessions and never throws on them", async () => {
@@ -230,7 +279,7 @@ describe("createAlignmentStore", () => {
     const session = new FakeSession();
     expect(
       await store.save(bare, "site", asAnchor(session.anchor()), asAnchor(session.anchor())),
-    ).toBe(false);
+    ).toBe("no anchors");
     expect(await store.restore(bare, "site")).toBeNull();
     await expect(store.forget(bare, "site")).resolves.toBeUndefined();
   });
@@ -241,7 +290,7 @@ describe("createAlignmentStore", () => {
     const store = createAlignmentStore(null);
     expect(
       await store.save(xr, "site", asAnchor(session.anchor()), asAnchor(session.anchor())),
-    ).toBe(false);
+    ).toBe("no storage");
     expect(session.persistentAnchors).toEqual([]);
     expect(await store.restore(xr, "site")).toBeNull();
     await expect(store.forget(xr, "site")).resolves.toBeUndefined();
@@ -264,7 +313,7 @@ describe("createAlignmentStore", () => {
     const store = createAlignmentStore(throwing);
     expect(
       await store.save(xr, "site", asAnchor(session.anchor()), asAnchor(session.anchor())),
-    ).toBe(false);
+    ).toBe("storage full");
     expect(session.persistentAnchors).toEqual([]);
     expect(await store.restore(xr, "site")).toBeNull();
     await expect(store.forget(xr, "site")).resolves.toBeUndefined();

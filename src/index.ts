@@ -11,6 +11,7 @@ import type {
   KitContext,
   KitModule,
   MenuController,
+  PanelsController,
   ResolvedOptions,
   SessionController,
   ViewpointsController,
@@ -21,6 +22,7 @@ import { createSessionController } from "./session";
 import { createSpace } from "./space";
 import { createHud } from "./hud";
 import { createMenu } from "./menu";
+import { createPanels } from "./panels";
 import { DEFAULT_THEME, mergeTheme } from "./theme";
 import { createTeleport } from "./teleport";
 import type {
@@ -63,7 +65,8 @@ export function resolveOptions(options: XRKitOptions): ResolvedOptions {
       scales: options.ar?.scales ?? [1, 1 / 50, 1 / 100, 1 / 200],
       defaultScale: options.ar?.defaultScale ?? 1 / 100,
       anchors: options.ar?.anchors ?? true,
-      rotateStepDegrees: options.ar?.rotateStepDegrees ?? 15,
+      rotateSpeed: options.ar?.rotateSpeed ?? 60,
+      moveSpeed: options.ar?.moveSpeed ?? 0.3,
     },
     performance: {
       framebufferScale: options.performance?.framebufferScale ?? 1,
@@ -130,12 +133,18 @@ export function createXRKit(options: XRKitOptions): XRKit {
   const menu: MenuController = createMenu(ctx, {
     viewpoints: () => viewpoints.list(),
     host: () => kit,
+    // With side panels set, B and Y are theirs; the two share uiCapture.
+    yieldButton: () => panels.hasPanels,
+    otherCapture: () => panels.capturing,
+  });
+  const panels: PanelsController = createPanels(ctx, {
+    otherCapture: () => menu.capturing,
   });
 
   const modulesFor = (mode: XRMode): KitModule[] =>
     mode === "vr"
-      ? [ctx.space, ctx.input, locomotion, teleport, viewpoints, menu, ctx.hud, diagnostics]
-      : [ctx.space, ctx.input, ar, ctx.hud, diagnostics];
+      ? [ctx.space, ctx.input, locomotion, teleport, viewpoints, menu, panels, ctx.hud, diagnostics]
+      : [ctx.space, ctx.input, ar, panels, ctx.hud, diagnostics];
 
   let active: KitModule[] = [];
   let pendingViewpoint: string | undefined;
@@ -234,6 +243,12 @@ export function createXRKit(options: XRKitOptions): XRKit {
     setScale(scale: number): void {
       ar.setScale(scale);
     },
+    setRotation(degrees: number): void {
+      ar.setRotation(degrees);
+    },
+    get rotation() {
+      return ar.rotation;
+    },
     realign(): void {
       if (ctx.mode === "ar") ar.realign();
     },
@@ -245,6 +260,39 @@ export function createXRKit(options: XRKitOptions): XRKit {
     },
     forgetAlignment(id: string): Promise<void> {
       return ar.forgetAlignment(id);
+    },
+    get alignmentMarks() {
+      return ctx.mode === "ar" ? ar.alignmentMarks : null;
+    },
+    get alignmentNote() {
+      return ctx.mode === "ar" ? ar.alignmentNote : null;
+    },
+    rebaseAlignment(alignment) {
+      if (ctx.mode === "ar") ar.rebaseAlignment(alignment);
+    },
+    get alignmentMatrix() {
+      return ctx.mode === "ar" ? ar.alignmentMatrix : null;
+    },
+    takePoint() {
+      return ctx.mode === "ar" ? ar.takePoint() : Promise.resolve(null);
+    },
+    get placement() {
+      return ctx.mode === "ar" ? ar.placement : null;
+    },
+    get placementLocked() {
+      return ar.locked;
+    },
+    set placementLocked(on) {
+      ar.locked = on;
+    },
+    get tool() {
+      return ar.tool;
+    },
+    set tool(tool) {
+      ar.tool = tool;
+    },
+    setPlacement(placement) {
+      if (ctx.mode === "ar") ar.setPlacement(placement);
     },
     get alignmentState() {
       return ctx.mode === "ar" ? ar.alignmentState : null;
@@ -287,7 +335,9 @@ export function createXRKit(options: XRKitOptions): XRKit {
       return diagnostics.stats;
     },
     openMenu(): void {
-      if (ctx.mode === "vr") menu.open();
+      if (ctx.mode !== "vr") return;
+      panels.close();
+      menu.open();
     },
     closeMenu(): void {
       menu.close();
@@ -297,6 +347,23 @@ export function createXRKit(options: XRKitOptions): XRKit {
     },
     setMenuItems(items) {
       menu.setItems(items);
+    },
+    setPanels(list) {
+      panels.set(list);
+    },
+    updatePanelRow(panelId, rowId, patch) {
+      panels.updateRow(panelId, rowId, patch);
+    },
+    openPanels(): void {
+      if (!ctx.mode || !panels.hasPanels) return;
+      menu.close();
+      panels.open();
+    },
+    closePanels(): void {
+      panels.close();
+    },
+    get panelsOpen() {
+      return panels.isOpen;
     },
     setTheme(patch) {
       ctx.theme = mergeTheme(ctx.theme, patch);
@@ -313,6 +380,7 @@ export function createXRKit(options: XRKitOptions): XRKit {
         teleport,
         viewpoints,
         menu,
+        panels,
         ar,
         diagnostics,
         ctx.hud,

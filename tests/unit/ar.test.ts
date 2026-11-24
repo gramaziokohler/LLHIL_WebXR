@@ -123,9 +123,10 @@ function setup(o: SetupOptions = {}) {
   const model = o.model === "scene" ? scene : (o.model ?? boxModel());
   if (model !== scene && !model.parent) scene.add(model);
   const ref = { kind: "local-floor" };
+  const xrCamera = new PerspectiveCamera();
   const renderer = {
     clearAlpha: 1,
-    xr: { getReferenceSpace: () => ref },
+    xr: { getReferenceSpace: () => ref, getCamera: () => xrCamera },
     getClearAlpha() {
       return this.clearAlpha;
     },
@@ -199,6 +200,7 @@ function setup(o: SetupOptions = {}) {
     hitAt,
     select,
     reticle,
+    xrCamera,
   };
 }
 
@@ -397,7 +399,7 @@ describe("createAR", () => {
     expect(placed).toHaveBeenCalledTimes(2);
   });
 
-  it("turns the placed model in steps about up through the placed point", async () => {
+  it("turns the placed model smoothly with the stick, about up through the placed point", async () => {
     const t = setup();
     t.ar.setScale(1);
     const q0 = t.model.getWorldQuaternion(new Quaternion());
@@ -406,32 +408,133 @@ describe("createAR", () => {
     t.hitAt(hit);
     t.select();
 
-    const ray = controllerRay("c0", 0.8);
+    const ray = controllerRay("c0", 1);
     t.rays.push(ray);
     const expectYaw = (deg: number) => {
       const q = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), deg * (Math.PI / 180));
       const expected = q.multiply(q0);
       expect(t.model.getWorldQuaternion(new Quaternion()).angleTo(expected)).toBeLessThan(1e-6);
       expect(baseOf(t.model).distanceTo(hit)).toBeLessThan(1e-9);
+      expect(t.ar.rotation).toBeCloseTo(deg, 6);
     };
 
+    // Full right for a tenth of a second at 60 degrees a second: clockwise seen from above.
+    t.ar.update(t.frame as unknown as XRFrame, 0.1);
+    expectYaw(-6);
+    // Inside the dead zone: nothing.
+    (ray.gamepad as any).axes[2] = 0.1;
+    t.ar.update(t.frame as unknown as XRFrame, 0.1);
+    expectYaw(-6);
+    // Half way between the dead zone and full, to the left: half speed.
+    (ray.gamepad as any).axes[2] = -0.575;
+    t.ar.update(t.frame as unknown as XRFrame, 0.1);
+    expectYaw(-3);
+    // A panel has the controllers: the stick is the panel's.
+    (t.ctx as any).uiCapture = true;
+    t.ar.update(t.frame as unknown as XRFrame, 0.1);
+    expectYaw(-3);
+    (t.ctx as any).uiCapture = false;
+    (ray.gamepad as any).axes[2] = 0;
+    t.ar.setRotation(90);
+    expectYaw(90);
+  });
+
+  it("slides the placed model on its plane with the grip held, forward being where the user looks", async () => {
+    const t = setup();
+    t.ar.setScale(1);
+    await t.start();
+    const hit = new Vector3(2, 0, 2);
+    t.hitAt(hit);
+    t.select();
+    const q = t.model.getWorldQuaternion(new Quaternion());
+
+    // Stick right and half forward, grip held; the user looks along -Z, a little down.
+    const ray = controllerRay("c0", 1);
+    (ray.gamepad as any).axes[3] = -0.575;
+    (ray.gamepad as any).buttons = [{}, { pressed: true }];
+    t.rays.push(ray);
+    t.xrCamera.lookAt(0, -1, -5);
+    t.xrCamera.updateMatrixWorld(true);
+    t.ar.update(t.frame as unknown as XRFrame, 1);
+    // 0.3 m/s: right is +X, forward -Z; no turn, no lift.
+    expect(baseOf(t.model).distanceTo(new Vector3(2.3, 0, 1.85))).toBeLessThan(1e-6);
+    expect(t.model.getWorldQuaternion(new Quaternion()).angleTo(q)).toBeLessThan(1e-9);
+    // A trigger a panel took does not ask for a new spot.
+    (t.ctx as any).uiCapture = true;
+    t.select();
+    (t.ctx as any).uiCapture = false;
+    t.hitAt(new Vector3(9, 0, 9));
     t.ar.update(t.frame as unknown as XRFrame, 0);
-    expectYaw(-15);
-    // Held: no further step.
+    expect(baseOf(t.model).distanceTo(new Vector3(2.3, 0, 1.85))).toBeLessThan(1e-6);
+  });
+
+  it("does not take a hand for a surface: a hit beside a controller is skipped for the next one", async () => {
+    const t = setup();
+    await t.start();
+    const hand = controllerRay("c1", 0);
+    hand.origin.set(0.1, 1, -0.4);
+    t.rays.push(hand);
+    // Only the hand: nothing to place on.
+    t.hitAt(new Vector3(0.1, 1.05, -0.45));
+    expect(t.reticle()!.visible).toBe(false);
+    t.select();
+    expect(t.model.visible).toBe(false);
+    // The hand, then the table behind it: the table.
+    const table = new Vector3(0.2, 0.7, -1.2);
+    t.frame.results.set(t.viewerSource(), [fakeHit(new Vector3(0.1, 1.05, -0.45)), fakeHit(table)]);
     t.ar.update(t.frame as unknown as XRFrame, 0);
-    expectYaw(-15);
-    // Between the thresholds: still not re-armed.
-    (ray.gamepad as any).axes[2] = 0.4;
-    t.ar.update(t.frame as unknown as XRFrame, 0);
-    (ray.gamepad as any).axes[2] = 0.8;
-    t.ar.update(t.frame as unknown as XRFrame, 0);
-    expectYaw(-15);
-    // Released, then pushed left twice.
-    for (const x of [0.1, -0.9, 0, -0.9]) {
-      (ray.gamepad as any).axes[2] = x;
-      t.ar.update(t.frame as unknown as XRFrame, 0);
-    }
-    expectYaw(15);
+    t.select();
+    expect(baseOf(t.model).distanceTo(table)).toBeLessThan(1e-9);
+  });
+
+  it("takePoint gives the controller's position on its next trigger pull, which does nothing else", async () => {
+    const t = setup();
+    await t.start();
+    t.hitAt(new Vector3(1, 0.7, -1));
+    const asked = t.ar.takePoint();
+    const ray = controllerRay("c0", 0);
+    ray.origin.set(0.3, 0.72, -0.5);
+    // A tap is not a controller: it places as usual and the request waits.
+    t.select();
+    expect(t.model.visible).toBe(true);
+    t.select(ray);
+    expect(await asked).toEqual([0.3, 0.72, -0.5]);
+    // The pull was the request's: no new spot was asked for.
+    expect(t.reticle()!.visible).toBe(false);
+    const dropped = t.ar.takePoint();
+    t.stop();
+    expect(await dropped).toBe(null);
+  });
+
+  it("placement reads where the model stands; setPlacement puts it there, shown", async () => {
+    const t = setup();
+    await t.start();
+    expect(t.ar.placement).toBe(null);
+    t.ar.setPlacement({ point: [1, 0.7, -2], rotation: 90, scale: 0.02 });
+    expect(t.model.visible).toBe(true);
+    expect(baseOf(t.model).distanceTo(new Vector3(1, 0.7, -2))).toBeLessThan(1e-9);
+    expect(t.ar.placement).toEqual({ point: [1, 0.7, -2], rotation: 90, scale: 0.02 });
+    expect(t.ar.rotation).toBeCloseTo(90, 9);
+  });
+
+  it("on a table the tool drives the stick too: move without the grip, height up and down", async () => {
+    const t = setup();
+    t.ar.setScale(1);
+    await t.start();
+    const hit = new Vector3(2, 0, 2);
+    t.hitAt(hit);
+    t.select();
+    const ray = controllerRay("c0", 1);
+    t.rays.push(ray);
+    t.ar.tool = "move";
+    t.ar.update(t.frame as unknown as XRFrame, 1);
+    expect(baseOf(t.model).distanceTo(new Vector3(2.3, 0, 2))).toBeLessThan(1e-6);
+    t.ar.tool = "height";
+    (ray.gamepad as any).axes[2] = 0;
+    (ray.gamepad as any).axes[3] = -1;
+    t.ar.update(t.frame as unknown as XRFrame, 1);
+    expect(baseOf(t.model).distanceTo(new Vector3(2.3, 0.3, 2))).toBeLessThan(1e-6);
+    t.ar.tool = "turn";
   });
 
   it("does not turn before the model is placed", async () => {
